@@ -1,0 +1,134 @@
+name: Release Go Library
+run-name: "Release (${{ inputs.bump_type }}) from ${{ github.ref_name }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump_type:
+        description: "Release bump type"
+        required: true
+        type: choice
+        default: patch
+        options:
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Create release tag and GitHub Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Ensure workflow runs from default branch
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [ "${GITHUB_REF_NAME}" != "${DEFAULT_BRANCH}" ]; then
+            echo "This workflow must run from default branch '${DEFAULT_BRANCH}', current: '${GITHUB_REF_NAME}'."
+            exit 1
+          fi
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run library tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test $(go list ./... | grep -v '/examples$')
+
+      - name: Determine next version
+        id: version
+        shell: bash
+        env:
+          BUMP_TYPE: ${{ inputs.bump_type }}
+        run: |
+          set -euo pipefail
+
+          latest_tag=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1 || true)
+
+          if [[ -z "$latest_tag" ]]; then
+            echo "No existing semver tag found (expected format vX.Y.Z). Create an initial tag first."
+            exit 1
+          fi
+
+          MIN_VERSION="${latest_tag#v}"
+          base_version="$MIN_VERSION"
+
+          IFS='.' read -r major minor patch <<< "$base_version"
+
+          case "$BUMP_TYPE" in
+            patch)
+              patch=$((patch + 1))
+              ;;
+            minor)
+              minor=$((minor + 1))
+              patch=0
+              ;;
+            major)
+              major=$((major + 1))
+              minor=0
+              patch=0
+              ;;
+            *)
+              echo "Unsupported bump type: $BUMP_TYPE"
+              exit 1
+              ;;
+          esac
+
+          next_version="${major}.${minor}.${patch}"
+          next_tag="v${next_version}"
+
+          if git rev-parse "$next_tag" >/dev/null 2>&1; then
+            echo "Tag $next_tag already exists."
+            exit 1
+          fi
+
+          echo "base_version=$base_version" >> "$GITHUB_OUTPUT"
+          echo "version=$next_version" >> "$GITHUB_OUTPUT"
+          echo "tag=$next_tag" >> "$GITHUB_OUTPUT"
+
+          echo "Resolved next release tag: $next_tag (bump: $BUMP_TYPE, base: $base_version, latest tag: $latest_tag)"
+
+      - name: Create and push tag
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
+          generate_release_notes: true
+
+      - name: Publish summary
+        run: |
+          {
+            echo "## Release created"
+            echo "- Bump type: ${{ inputs.bump_type }}"
+            echo "- Base version: ${{ steps.version.outputs.base_version }}"
+            echo "- Tag: ${{ steps.version.outputs.tag }}"
+          } >> "$GITHUB_STEP_SUMMARY"
