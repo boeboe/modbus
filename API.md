@@ -537,51 +537,98 @@ if err != nil {
 
 ### 2.7 Device identification (FC43)
 
+Device identification (FC43 / MEI 0x0E) exposes three categories of objects:
+
+- **Basic** (mandatory): VendorName, ProductCode, MajorMinorRevision
+- **Regular** (optional): Basic + VendorUrl, ProductName, ModelName, UserApplicationName
+- **Extended** (optional): Regular + private/vendor objects (object IDs 0x80–0xFF)
+
+Use **ReadAllDeviceIdentification** to fetch everything the device supports in one call; use **ReadDeviceIdentification** when you need a specific category or a single object.
+
+#### ReadAllDeviceIdentification — get all available identification
+
 ```go
-func (mc *ModbusClient) ReadDeviceIdentification(
-    ctx     context.Context,
-    unitId  uint8,
-    readDeviceIdCode uint8,
-    objectId uint8,
+func (mc *ModbusClient) ReadAllDeviceIdentification(
+    ctx    context.Context,
+    unitId uint8,
 ) (*DeviceIdentification, error)
 ```
 
-Sends a FC43 / MEI 0x0E request. Automatically pages through `MoreFollows`
-responses and assembles all objects into a single result.
+Requests the Extended category; the device responds with all objects it implements (basic, regular, and/or extended, per its conformity level). Automatically pages through `MoreFollows`. Prefer this when you want a complete snapshot.
 
-`readDeviceIdCode` values:
+```go
+di, err := client.ReadAllDeviceIdentification(ctx, 1)
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Printf("Conformity level: 0x%02x\n", di.ConformityLevel)
+for _, obj := range di.Objects {
+    fmt.Printf("%s = %s\n", obj.Name, obj.Value)
+}
+```
 
-| Value | Access category |
-|---|---|
-| `0x01` | Basic (VendorName, ProductCode, MajorMinorRevision) |
-| `0x02` | Regular (above + VendorUrl, ProductName, ModelName, UserApplicationName) |
-| `0x03` | Extended (all standard + private objects) |
-| `0x04` | Individual object access (pass the specific `objectId`) |
+#### ReadDeviceIdentification — category or single object
+
+```go
+func (mc *ModbusClient) ReadDeviceIdentification(
+    ctx              context.Context,
+    unitId           uint8,
+    readDeviceIdCode uint8,
+    objectId         uint8,
+) (*DeviceIdentification, error)
+```
+
+Sends a FC43 / MEI 0x0E request for a specific category or one object. Pages through `MoreFollows` and returns all objects for that request.
+
+**Read device ID code constants:**
+
+| Constant | Value | Category |
+|----------|-------|----------|
+| `modbus.ReadDeviceIdBasic` | `0x01` | Basic (VendorName, ProductCode, MajorMinorRevision) |
+| `modbus.ReadDeviceIdRegular` | `0x02` | Regular (+ VendorUrl, ProductName, ModelName, UserApplicationName) |
+| `modbus.ReadDeviceIdExtended` | `0x03` | Extended (+ private objects 0x80–0xFF) |
+| `modbus.ReadDeviceIdIndividual` | `0x04` | Single object (set `objectId` to desired ID) |
+
+For stream access (Basic/Regular/Extended), pass `objectId` as `0x00` to start from the first object. For Individual, pass the desired object ID. If you request a higher category than the device supports, it responds at its actual conformity level.
+
+**Response types:**
 
 ```go
 type DeviceIdentification struct {
-    ReadDeviceIdCode uint8
-    ConformityLevel  uint8
-    MoreFollows      uint8
-    NextObjectId     uint8
+    ReadDeviceIdCode uint8   // echo of requested (or actual) category
+    ConformityLevel  uint8   // 0x01/0x02/0x03 or 0x81/0x82/0x83 (stream + individual)
+    MoreFollows      uint8   // 0x00 = last page, 0xFF = more pages
+    NextObjectId     uint8   // next object to request when MoreFollows == 0xFF
     Objects          []DeviceIdentificationObject
 }
 
 type DeviceIdentificationObject struct {
-    Id    uint8  // object identifier
-    Name  string // human-readable label (e.g. "VendorName")
+    Id    uint8  // object identifier (0x00–0x06 standard, 0x80–0xFF vendor)
+    Name  string // human-readable label (e.g. "VendorName", "Extended")
     Value string // decoded UTF-8 value
 }
 ```
 
+**Example — basic only:**
+
 ```go
-di, err := client.ReadDeviceIdentification(ctx, 1, 0x01, 0x00)
+di, err := client.ReadDeviceIdentification(ctx, 1, modbus.ReadDeviceIdBasic, 0x00)
 if err != nil {
     log.Fatal(err)
 }
 for _, obj := range di.Objects {
     fmt.Printf("%s = %s\n", obj.Name, obj.Value)
 }
+```
+
+**Example — single object (individual access):**
+
+```go
+di, err := client.ReadDeviceIdentification(ctx, 1, modbus.ReadDeviceIdIndividual, 0x04)
+if err != nil {
+    log.Fatal(err)
+}
+// di.Objects has one element: ProductName (0x04)
 ```
 
 ---

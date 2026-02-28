@@ -90,7 +90,7 @@ cancellation control independent of the connection lifecycle.
 | 21 | 0x15 | Write File Record | `WriteFileRecords` |
 | 23 | 0x17 | Read/Write Multiple Registers | `ReadWriteMultipleRegisters` |
 | 24 | 0x18 | Read FIFO Queue | `ReadFIFOQueue` |
-| 43/14 | 0x2B/0x0E | Read Device Identification | `ReadDeviceIdentification` |
+| 43/14 | 0x2B/0x0E | Read Device Identification | `ReadDeviceIdentification`, `ReadAllDeviceIdentification` |
 
 ### Supported Go types
 

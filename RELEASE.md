@@ -1,5 +1,21 @@
 # Release Notes
 
+## v1.0.1 — 2026-03-01
+
+### Device identification (FC43) improvements
+
+- **`ReadAllDeviceIdentification(ctx, unitId)`** — New convenience method that requests the Extended category (basic + regular + extended) in one call. The device responds with all identification objects it supports; no need to call `ReadDeviceIdentification` multiple times or choose a category.
+- **Read device ID constants** — Exported constants for category and access type: `ReadDeviceIdBasic` (0x01), `ReadDeviceIdRegular` (0x02), `ReadDeviceIdExtended` (0x03), `ReadDeviceIdIndividual` (0x04). Use these with `ReadDeviceIdentification` for clearer, self-documenting code.
+- **Documentation** — API.md section 2.7 (Device identification) rewritten: describes Basic / Regular / Extended categories, documents `ReadAllDeviceIdentification` and the constants, and adds examples for “read all”, category-only, and individual object access.
+- **Tests** — `TestReadAllDeviceIdentification` added; existing FC43 tests updated to use `ReadDeviceIdBasic`.
+
+### Documentation
+
+- **[API.md](API.md)** — FC43 section updated with full device identification API and examples.
+- **[README.md](README.md)** — Client function table now lists `ReadAllDeviceIdentification` for FC43/14.
+
+---
+
 ## v1.0.0 — 2026-02-27
 
 Initial release.

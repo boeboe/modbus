@@ -55,7 +55,18 @@ const (
 
 	// encapsulated interface (FC43) MEI types.
 	meiReadDeviceIdentification uint8 = 0x0e
+)
 
+// Read Device ID codes for FC43 (Read Device Identification).
+// Use with ReadDeviceIdentification; ReadAllDeviceIdentification uses Extended internally.
+const (
+	ReadDeviceIdBasic      = 0x01 // Basic: VendorName, ProductCode, MajorMinorRevision (mandatory)
+	ReadDeviceIdRegular    = 0x02 // Regular: Basic + VendorUrl, ProductName, ModelName, UserApplicationName
+	ReadDeviceIdExtended   = 0x03 // Extended: Regular + private/vendor objects (0x80–0xFF)
+	ReadDeviceIdIndividual = 0x04 // Individual: request a single object by objectId
+)
+
+const (
 	// exception codes.
 	exIllegalFunction         uint8 = 0x01
 	exIllegalDataAddress      uint8 = 0x02

@@ -982,12 +982,18 @@ func (mc *ModbusClient) ReadPackedBCD(ctx context.Context, unitId uint8, addr ui
 	return
 }
 
-// Reads device identification objects using FC43 / MEI type 0x0E.
-// readDeviceIdCode must be one of:
-//   - 0x01: basic
-//   - 0x02: regular
-//   - 0x03: extended
-//   - 0x04: individual access
+// ReadDeviceIdentification reads device identification objects using FC43 / MEI type 0x0E.
+// It automatically pages through MoreFollows and returns all objects for the requested category.
+//
+// readDeviceIdCode selects the category (use constants from this package):
+//   - ReadDeviceIdBasic (0x01): VendorName, ProductCode, MajorMinorRevision (mandatory)
+//   - ReadDeviceIdRegular (0x02): Basic + VendorUrl, ProductName, ModelName, UserApplicationName
+//   - ReadDeviceIdExtended (0x03): Regular + private/vendor objects (0x80–0xFF)
+//   - ReadDeviceIdIndividual (0x04): single object by objectId (objectId must be set)
+//
+// For objectId use 0x00 to start from the first object (stream access); for Individual,
+// pass the desired object ID. The device responds at its conformity level if a higher
+// category is requested (e.g. requesting Extended on a basic-only device returns Basic).
 func (mc *ModbusClient) ReadDeviceIdentification(ctx context.Context, unitId uint8, readDeviceIdCode uint8, objectId uint8) (di *DeviceIdentification, err error) {
 	var req *pdu
 	var res *pdu
@@ -1100,6 +1106,15 @@ func (mc *ModbusClient) ReadDeviceIdentification(ctx context.Context, unitId uin
 			return
 		}
 	}
+}
+
+// ReadAllDeviceIdentification reads all device identification the unit supports:
+// basic, regular, and extended (FC43 / MEI 0x0E). It requests the Extended category
+// (ReadDeviceIdExtended); the device responds with all objects it implements, up to
+// its conformity level. Use this when you want a single, complete snapshot of
+// device identification without calling ReadDeviceIdentification multiple times.
+func (mc *ModbusClient) ReadAllDeviceIdentification(ctx context.Context, unitId uint8) (*DeviceIdentification, error) {
+	return mc.ReadDeviceIdentification(ctx, unitId, ReadDeviceIdExtended, 0x00)
 }
 
 // Writes a single coil (function code 05).
