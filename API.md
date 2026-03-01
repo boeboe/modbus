@@ -16,6 +16,7 @@ All examples assume `import "github.com/boeboe/modbus"`.
    - [Write operations](#25-write-operations)
    - [Advanced register operations (FC20/21/23/24)](#26-advanced-register-operations-fc20212324)
    - [Device identification (FC43)](#27-device-identification-fc43)
+   - [Modbus device detection](#28-modbus-device-detection)
 3. [Server](#3-server)
    - [Configuration](#31-serverconfiguration)
    - [Lifecycle](#32-lifecycle)
@@ -629,6 +630,53 @@ if err != nil {
     log.Fatal(err)
 }
 // di.Objects has one element: ProductName (0x04)
+```
+
+---
+
+### 2.8 Modbus device detection
+
+**IsModbusDevice** probes the target with a minimal, read-only request sequence to determine whether the given unit ID responds with Modbus-compliant structure (valid MBAP where applicable, normal or exception response). Use after **Open()**; it does not mutate server state. Probes FC43, FC03, FC04, FC01, FC02 in order; returns **true** on first valid response, **false** if none succeed. Which unit IDs to try (e.g. sweep 1..247) is left to the caller, consistent with other client APIs that take `unitId`.
+
+```go
+func (mc *ModbusClient) IsModbusDevice(ctx context.Context, unitId uint8) (bool, error)
+```
+
+**Return values:**
+
+| Result | Meaning |
+|--------|--------|
+| `(true, nil)` | Confirmed Modbus (valid normal or exception response) |
+| `(false, nil)` | No valid Modbus response for this unit ID |
+| `(false, err)` | Context cancelled or transport/internal error |
+
+**Probe order:** FC43 (Read Device Identification, Basic) → FC03 (Read Holding Registers, addr 0, qty 1) → FC04 (Read Input Registers) → FC01 (Read Coils) → FC02 (Read Discrete Inputs).
+
+**Example:**
+
+```go
+ok, err := client.IsModbusDevice(ctx, 1)
+if err != nil {
+    log.Fatal(err)
+}
+if ok {
+    fmt.Println("Modbus device detected on unit 1")
+}
+```
+
+**Example — unit ID sweep (caller-driven):**
+
+```go
+for id := byte(1); id <= 247; id++ {
+    ok, err := client.IsModbusDevice(ctx, id)
+    if err != nil {
+        log.Fatal(err)
+    }
+    if ok {
+        fmt.Printf("Modbus device on unit %d\n", id)
+        break
+    }
+}
 ```
 
 ---

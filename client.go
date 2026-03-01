@@ -1117,6 +1117,60 @@ func (mc *ModbusClient) ReadAllDeviceIdentification(ctx context.Context, unitId 
 	return mc.ReadDeviceIdentification(ctx, unitId, ReadDeviceIdExtended, 0x00)
 }
 
+// IsModbusDevice probes the target with a minimal, read-only request sequence to
+// determine whether it responds with Modbus-compliant structure (valid MBAP where
+// applicable, normal or exception response). Use after Open(); does not mutate
+// server state. Probes the given unit ID with FC43, FC03, FC04, FC01, FC02 in
+// order; returns true on first valid response (normal or exception), false if
+// none succeed. Caller decides which unit IDs to try (e.g. sweep 1..247).
+func (mc *ModbusClient) IsModbusDevice(ctx context.Context, unitId uint8) (bool, error) {
+	mc.lock.Lock()
+	defer mc.lock.Unlock()
+	return mc.probe(ctx, unitId)
+}
+
+// probe runs the detection probe sequence (FC43, FC03, FC04, FC01, FC02) for one
+// unit ID. Caller must hold mc.lock. Returns (true, nil) on first valid Modbus
+// response (normal or exception), (false, nil) on timeout or invalid response,
+// (false, err) on context or transport error.
+func (mc *ModbusClient) probe(ctx context.Context, unitId uint8) (bool, error) {
+	probes := []struct {
+		fc      uint8
+		payload []byte
+	}{
+		{fcEncapsulatedInterface, []byte{meiReadDeviceIdentification, ReadDeviceIdBasic, 0x00}},
+		{fcReadHoldingRegisters, append(uint16ToBytes(BigEndian, 0), uint16ToBytes(BigEndian, 1)...)},
+		{fcReadInputRegisters, append(uint16ToBytes(BigEndian, 0), uint16ToBytes(BigEndian, 1)...)},
+		{fcReadCoils, append(uint16ToBytes(BigEndian, 0), uint16ToBytes(BigEndian, 1)...)},
+		{fcReadDiscreteInputs, append(uint16ToBytes(BigEndian, 0), uint16ToBytes(BigEndian, 1)...)},
+	}
+	for _, p := range probes {
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		default:
+		}
+		req := &pdu{unitId: unitId, functionCode: p.fc, payload: p.payload}
+		res, err := mc.executeRequest(ctx, req)
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return false, err
+			}
+			// Timeout, bad unit ID, protocol error, EOF, etc.: no valid Modbus response, try next probe
+			continue
+		}
+		if res.functionCode != req.functionCode && res.functionCode != (req.functionCode|0x80) {
+			continue
+		}
+		// FC43 normal response: minimal valid payload is 6 bytes (MEI, readCode, conformity, moreFollows, nextObjId, objCount)
+		if res.functionCode == req.functionCode && req.functionCode == fcEncapsulatedInterface && len(res.payload) < 6 {
+			continue
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
 // Writes a single coil (function code 05).
 func (mc *ModbusClient) WriteCoil(ctx context.Context, unitId uint8, addr uint16, value bool) (err error) {
 	var payload uint16

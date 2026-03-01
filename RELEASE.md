@@ -1,5 +1,21 @@
 # Release Notes
 
+## v1.0.2 — 2026-03-01
+
+### Modbus device detection
+
+- **`IsModbusDevice(ctx, unitId)`** — New method to probe a target and determine whether the given unit ID responds with Modbus-compliant structure (valid MBAP where applicable, normal or exception response). Use after `Open()`; read-only and does not mutate server state.
+- **Probe order** — FC43 (Read Device Identification, Basic) → FC03 (Read Holding Registers, addr 0, qty 1) → FC04 (Read Input Registers) → FC01 (Read Coils) → FC02 (Read Discrete Inputs). Returns `true` on first valid response, `false` only after all probes are tried.
+- **API consistency** — Takes `unitId uint8` like other client methods; which unit IDs to try (e.g. sweep 1..247) is left to the caller.
+- **Tests** — Coverage for valid server, exception-only response, TCP echo (rejected), random garbage (rejected), unit ID mismatch, and context cancellation.
+
+### Documentation
+
+- **[API.md](API.md)** — New §2.8 Modbus device detection: signature, return values, probe order, and example with caller-driven unit ID sweep.
+- **[README.md](README.md)** — Device detection line updated for `IsModbusDevice(ctx, unitId)`.
+
+---
+
 ## v1.0.1 — 2026-03-01
 
 ### Device identification (FC43) improvements

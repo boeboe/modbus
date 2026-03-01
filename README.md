@@ -92,6 +92,8 @@ cancellation control independent of the connection lifecycle.
 | 24 | 0x18 | Read FIFO Queue | `ReadFIFOQueue` |
 | 43/14 | 0x2B/0x0E | Read Device Identification | `ReadDeviceIdentification`, `ReadAllDeviceIdentification` |
 
+**Device detection:** `IsModbusDevice(ctx, unitId)` probes the target with read-only requests (FC43, FC03, FC04, FC01, FC02) and returns whether the given unit ID responds with Modbus-compliant structure. Caller chooses which unit IDs to try. See [API.md](API.md#28-modbus-device-detection).
+
 ### Supported Go types
 
 | Modbus data model | Go types |
