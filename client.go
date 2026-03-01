@@ -1335,7 +1335,13 @@ func allDetectionProbes() []detectionProbe {
 				if isValidModbusException(req, res) {
 					return true
 				}
-				return res.functionCode == req.functionCode && len(res.payload) >= 1
+				// Normal FC11: byte count (1) + data; spec has at least server ID + run indicator (2 bytes).
+				// Reject echo (which would be [unitId, 0x11], so byte count 1 and len 2).
+				if res.functionCode != req.functionCode || len(res.payload) < 2 {
+					return false
+				}
+				byteCount := res.payload[0]
+				return int(byteCount) == len(res.payload)-1 && byteCount >= 2
 			},
 		},
 		// FC18 Read FIFO Queue (FIFO pointer addr 0).
@@ -1358,7 +1364,13 @@ func allDetectionProbes() []detectionProbe {
 				if isValidModbusException(req, res) {
 					return true
 				}
-				return res.functionCode == req.functionCode && len(res.payload) >= 1
+				// Normal FC20: byte count (1) + refType (1) + data (2*recordLen). Our probe expects one record → 4 bytes.
+				// Reject echo (8 bytes, payload[0]==7) by requiring the expected response size.
+				if res.functionCode != req.functionCode || len(res.payload) < 4 {
+					return false
+				}
+				byteCount := res.payload[0]
+				return int(byteCount) == len(res.payload)-1 && byteCount == 3
 			},
 		},
 	}
