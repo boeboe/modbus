@@ -1,5 +1,18 @@
 # Release Notes
 
+## v1.0.4 — 2026-03-01
+
+### FingerprintDevice extended with additional function codes
+
+- **`FingerprintDevice`** now probes and records support for four more function codes in addition to FC08/FC43/FC03/FC04/FC01/FC02:
+  - **FC11 (Report Server ID)** — no request data; support recorded in `ModbusFingerprint.SupportsFC11`.
+  - **FC18 (Read FIFO Queue)** — probe at FIFO pointer address 0; support in `SupportsFC18`.
+  - **FC20 (Read File Record)** — one sub-request (file 1, record 0, length 1); support in `SupportsFC20`.
+- **`ModbusFingerprint`** struct gains three fields: `SupportsFC11`, `SupportsFC18`, `SupportsFC20`. Field order updated so FCs are grouped (FC08, FC11, FC18, FC20, FC43, then FC03/04/01/02).
+- **API.md** — `ModbusFingerprint` and fingerprint example updated for the new fields.
+
+---
+
 ## v1.0.3 — 2026-03-01
 
 ### New function code support
