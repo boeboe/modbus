@@ -35,6 +35,22 @@ const (
 	LowWordFirst  WordOrder = 2
 )
 
+// DetectionMode controls the probe sequence used by IsModbusDevice.
+// The zero value (DetectAggressive) uses the full probe set for maximum coverage.
+type DetectionMode int
+
+const (
+	// DetectAggressive uses the full probe sequence: FC08, FC43, FC03, FC04, FC01, FC02.
+	// This is the default (zero value) and provides the highest detection confidence.
+	DetectAggressive DetectionMode = iota
+	// DetectStrict uses a reduced probe set: FC08, FC43, FC03.
+	// Good balance between speed and coverage.
+	DetectStrict
+	// DetectBasic uses only FC03 (Read Holding Registers, addr 0, qty 1).
+	// Fastest but may miss devices that don't implement FC03.
+	DetectBasic
+)
+
 // Modbus client configuration object.
 type ClientConfiguration struct {
 	// URL sets the client mode and target location in the form
@@ -84,6 +100,11 @@ type ClientConfiguration struct {
 	// Applies only to TCP-based transports. Zero and 1 both mean a single connection
 	// (no pool). Values greater than 1 allocate a pool of up to MaxConns connections.
 	MaxConns int
+
+	// DetectionMode controls which probes IsModbusDevice and DetectUnitID execute.
+	// DetectAggressive (default, zero value) uses the full set: FC08, FC43, FC03, FC04, FC01, FC02.
+	// DetectStrict uses FC08, FC43, FC03. DetectBasic uses FC03 only.
+	DetectionMode DetectionMode
 }
 
 // Modbus client object.
@@ -113,6 +134,96 @@ type DeviceIdentification struct {
 	MoreFollows      uint8
 	NextObjectId     uint8
 	Objects          []DeviceIdentificationObject
+}
+
+// ModbusFingerprint records which function codes a unit actively supports.
+// A function is marked as supported when the device responds with a non-exception
+// normal response, or with an exception other than Illegal Function (0x01).
+// Use FingerprintDevice to populate.
+type ModbusFingerprint struct {
+	UnitId       uint8
+	SupportsFC08 bool // Diagnostics
+	SupportsFC43 bool // Read Device Identification
+	SupportsFC03 bool // Read Holding Registers
+	SupportsFC04 bool // Read Input Registers
+	SupportsFC01 bool // Read Coils
+	SupportsFC02 bool // Read Discrete Inputs
+}
+
+// DiagnosticSubFunction is the two-byte sub-function code for Diagnostics (FC 0x08).
+// Use the constants below for well-known sub-functions; raw uint16 values are valid.
+type DiagnosticSubFunction uint16
+
+const (
+	DiagReturnQueryData                  DiagnosticSubFunction = 0x0000 // Loopback request data
+	DiagRestartCommunications            DiagnosticSubFunction = 0x0001
+	DiagReturnDiagnosticRegister         DiagnosticSubFunction = 0x0002
+	DiagChangeASCIIInputDelimiter        DiagnosticSubFunction = 0x0003
+	DiagForceListenOnlyMode              DiagnosticSubFunction = 0x0004
+	DiagClearCountersAndDiagnosticReg    DiagnosticSubFunction = 0x000A
+	DiagReturnBusMessageCount            DiagnosticSubFunction = 0x000B
+	DiagReturnBusCommunicationErrorCount DiagnosticSubFunction = 0x000C
+	DiagReturnBusExceptionErrorCount     DiagnosticSubFunction = 0x000D
+	DiagReturnServerMessageCount         DiagnosticSubFunction = 0x000E
+	DiagReturnServerNoResponseCount      DiagnosticSubFunction = 0x000F
+	DiagReturnServerNAKCount             DiagnosticSubFunction = 0x0010
+	DiagReturnServerBusyCount            DiagnosticSubFunction = 0x0011
+	DiagReturnBusCharacterOverrunCount   DiagnosticSubFunction = 0x0012
+	DiagClearOverrunCounterAndFlag       DiagnosticSubFunction = 0x0014
+)
+
+// String returns a short name for the sub-function for logging and debugging.
+func (s DiagnosticSubFunction) String() string {
+	switch s {
+	case DiagReturnQueryData:
+		return "ReturnQueryData"
+	case DiagRestartCommunications:
+		return "RestartCommunications"
+	case DiagReturnDiagnosticRegister:
+		return "ReturnDiagnosticRegister"
+	case DiagChangeASCIIInputDelimiter:
+		return "ChangeASCIIInputDelimiter"
+	case DiagForceListenOnlyMode:
+		return "ForceListenOnlyMode"
+	case DiagClearCountersAndDiagnosticReg:
+		return "ClearCountersAndDiagnosticReg"
+	case DiagReturnBusMessageCount:
+		return "ReturnBusMessageCount"
+	case DiagReturnBusCommunicationErrorCount:
+		return "ReturnBusCommunicationErrorCount"
+	case DiagReturnBusExceptionErrorCount:
+		return "ReturnBusExceptionErrorCount"
+	case DiagReturnServerMessageCount:
+		return "ReturnServerMessageCount"
+	case DiagReturnServerNoResponseCount:
+		return "ReturnServerNoResponseCount"
+	case DiagReturnServerNAKCount:
+		return "ReturnServerNAKCount"
+	case DiagReturnServerBusyCount:
+		return "ReturnServerBusyCount"
+	case DiagReturnBusCharacterOverrunCount:
+		return "ReturnBusCharacterOverrunCount"
+	case DiagClearOverrunCounterAndFlag:
+		return "ClearOverrunCounterAndFlag"
+	default:
+		return fmt.Sprintf("DiagnosticSubFunction(0x%04X)", uint16(s))
+	}
+}
+
+// DiagnosticResponse is the response from Diagnostics (FC 0x08). SubFunction is
+// echoed from the request; Data is the sub-function-specific data (e.g. loopback
+// data, diagnostic register value).
+type DiagnosticResponse struct {
+	SubFunction DiagnosticSubFunction
+	Data        []byte
+}
+
+// ReportServerIdResponse is the response from Report Server ID (FC 0x11).
+// ByteCount is the number of following bytes; Data contains device-specific
+// server ID, run indicator status (0x00 = OFF, 0xFF = ON), and optional additional data.
+type ReportServerIdResponse struct {
+	ByteCount uint8
+	Data      []byte
 }
 
 // FileRecordRequest describes one sub-request for ReadFileRecords (FC20).
@@ -1117,33 +1228,233 @@ func (mc *ModbusClient) ReadAllDeviceIdentification(ctx context.Context, unitId 
 	return mc.ReadDeviceIdentification(ctx, unitId, ReadDeviceIdExtended, 0x00)
 }
 
+// detectionProbe is one entry in the probe sequence used by IsModbusDevice.
+type detectionProbe struct {
+	fc       uint8
+	payload  []byte
+	validate func(req, res *pdu) bool
+}
+
+// isValidModbusException returns true when res is a well-formed Modbus exception:
+// function code equals req FC | 0x80 and payload is a single byte in the valid
+// exception code range (0x01–0x0B).
+func isValidModbusException(req, res *pdu) bool {
+	return res.functionCode == (req.functionCode|0x80) &&
+		len(res.payload) == 1 &&
+		res.payload[0] >= 0x01 && res.payload[0] <= 0x0b
+}
+
+// allDetectionProbes returns the full ordered probe table.
+// Each probe carries its own structural validator so that detection is
+// function-aware and rejects non-Modbus traffic (e.g. TCP echo services,
+// HTTP on port 502, random binary protocols).
+func allDetectionProbes() []detectionProbe {
+	return []detectionProbe{
+		// FC08 Diagnostics: sub-function 0x0000 (Return Query Data) with test data.
+		// Only exception responses count as positive detection; a normal loopback
+		// echo is indistinguishable from a TCP echo service at the PDU level.
+		{
+			fc:      fcDiagnostics,
+			payload: []byte{0x00, 0x00, 0x12, 0x34},
+			validate: func(req, res *pdu) bool {
+				return isValidModbusException(req, res)
+			},
+		},
+		// FC43 Read Device Identification (Basic category, starting at object 0).
+		{
+			fc:      fcEncapsulatedInterface,
+			payload: []byte{meiReadDeviceIdentification, ReadDeviceIdBasic, 0x00},
+			validate: func(req, res *pdu) bool {
+				if isValidModbusException(req, res) {
+					return true
+				}
+				// Normal FC43: MEI + readCode + conformity + moreFollows + nextObjId + objCount = 6 min.
+				return res.functionCode == req.functionCode && len(res.payload) >= 6
+			},
+		},
+		// FC03 Read Holding Registers (addr 0, qty 1).
+		{
+			fc:      fcReadHoldingRegisters,
+			payload: append(uint16ToBytes(BigEndian, 0), uint16ToBytes(BigEndian, 1)...),
+			validate: func(req, res *pdu) bool {
+				if isValidModbusException(req, res) {
+					return true
+				}
+				// Normal FC03: byte-count (2) + 2 data bytes = 3 bytes.
+				return res.functionCode == req.functionCode &&
+					len(res.payload) == 3 && res.payload[0] == 2
+			},
+		},
+		// FC04 Read Input Registers (addr 0, qty 1).
+		{
+			fc:      fcReadInputRegisters,
+			payload: append(uint16ToBytes(BigEndian, 0), uint16ToBytes(BigEndian, 1)...),
+			validate: func(req, res *pdu) bool {
+				if isValidModbusException(req, res) {
+					return true
+				}
+				// Normal FC04: byte-count (2) + 2 data bytes = 3 bytes.
+				return res.functionCode == req.functionCode &&
+					len(res.payload) == 3 && res.payload[0] == 2
+			},
+		},
+		// FC01 Read Coils (addr 0, qty 1).
+		{
+			fc:      fcReadCoils,
+			payload: append(uint16ToBytes(BigEndian, 0), uint16ToBytes(BigEndian, 1)...),
+			validate: func(req, res *pdu) bool {
+				if isValidModbusException(req, res) {
+					return true
+				}
+				// Normal FC01: byte-count (1) + 1 data byte = 2 bytes.
+				return res.functionCode == req.functionCode &&
+					len(res.payload) == 2 && res.payload[0] == 1
+			},
+		},
+		// FC02 Read Discrete Inputs (addr 0, qty 1).
+		{
+			fc:      fcReadDiscreteInputs,
+			payload: append(uint16ToBytes(BigEndian, 0), uint16ToBytes(BigEndian, 1)...),
+			validate: func(req, res *pdu) bool {
+				if isValidModbusException(req, res) {
+					return true
+				}
+				// Normal FC02: byte-count (1) + 1 data byte = 2 bytes.
+				return res.functionCode == req.functionCode &&
+					len(res.payload) == 2 && res.payload[0] == 1
+			},
+		},
+	}
+}
+
+// probesForMode returns the probe subset for the given detection mode.
+func probesForMode(mode DetectionMode) []detectionProbe {
+	all := allDetectionProbes()
+	switch mode {
+	case DetectBasic:
+		// FC03 only (index 2 in full table).
+		return []detectionProbe{all[2]}
+	case DetectStrict:
+		// FC08, FC43, FC03 (indices 0–2).
+		return all[:3]
+	default:
+		return all
+	}
+}
+
 // IsModbusDevice probes the target with a minimal, read-only request sequence to
-// determine whether it responds with Modbus-compliant structure (valid MBAP where
-// applicable, normal or exception response). Use after Open(); does not mutate
-// server state. Probes the given unit ID with FC43, FC03, FC04, FC01, FC02 in
-// order; returns true on first valid response (normal or exception), false if
-// none succeed. Caller decides which unit IDs to try (e.g. sweep 1..247).
+// determine whether the given unit ID responds with Modbus-compliant structure
+// (valid MBAP where applicable, structurally valid normal or exception response).
+// Use after Open(); does not mutate server state.
+//
+// The probe sequence depends on ClientConfiguration.DetectionMode:
+//
+//	DetectAggressive (default) : FC08 → FC43 → FC03 → FC04 → FC01 → FC02
+//	DetectStrict               : FC08 → FC43 → FC03
+//	DetectBasic                : FC03
+//
+// Returns true on first structurally validated response (normal or exception),
+// false if no probe succeeds. Caller decides which unit IDs to try.
 func (mc *ModbusClient) IsModbusDevice(ctx context.Context, unitId uint8) (bool, error) {
 	mc.lock.Lock()
 	defer mc.lock.Unlock()
 	return mc.probe(ctx, unitId)
 }
 
-// probe runs the detection probe sequence (FC43, FC03, FC04, FC01, FC02) for one
-// unit ID. Caller must hold mc.lock. Returns (true, nil) on first valid Modbus
-// response (normal or exception), (false, nil) on timeout or invalid response,
-// (false, err) on context or transport error.
-func (mc *ModbusClient) probe(ctx context.Context, unitId uint8) (bool, error) {
-	probes := []struct {
-		fc      uint8
-		payload []byte
-	}{
-		{fcEncapsulatedInterface, []byte{meiReadDeviceIdentification, ReadDeviceIdBasic, 0x00}},
-		{fcReadHoldingRegisters, append(uint16ToBytes(BigEndian, 0), uint16ToBytes(BigEndian, 1)...)},
-		{fcReadInputRegisters, append(uint16ToBytes(BigEndian, 0), uint16ToBytes(BigEndian, 1)...)},
-		{fcReadCoils, append(uint16ToBytes(BigEndian, 0), uint16ToBytes(BigEndian, 1)...)},
-		{fcReadDiscreteInputs, append(uint16ToBytes(BigEndian, 0), uint16ToBytes(BigEndian, 1)...)},
+// DetectUnitID scans the full unit-ID range (0–255) and returns every unit
+// ID that responds with a valid Modbus frame. The scan order is optimised for
+// speed: common IDs first (1, 255, 0), then ascending 2–254.
+//
+// Returns (ids, nil) on success where ids may be empty,
+// or (nil, err) on context cancellation or transport error.
+func (mc *ModbusClient) DetectUnitID(ctx context.Context) ([]uint8, error) {
+	mc.lock.Lock()
+	defer mc.lock.Unlock()
+
+	// Build candidate list: prioritise the most common unit IDs.
+	candidates := make([]uint8, 0, 256)
+	candidates = append(candidates, 1, 255, 0)
+	for id := uint8(2); id <= 254; id++ {
+		candidates = append(candidates, id)
 	}
+
+	var found []uint8
+	for _, id := range candidates {
+		select {
+		case <-ctx.Done():
+			return found, ctx.Err()
+		default:
+		}
+		ok, err := mc.probe(ctx, id)
+		if err != nil {
+			return found, err
+		}
+		if ok {
+			found = append(found, id)
+		}
+	}
+	return found, nil
+}
+
+// FingerprintDevice runs all detection probes against the given unit ID and
+// records which function codes the device actively supports. A function is
+// marked as supported when the device responds with a normal (non-exception)
+// response or an exception other than Illegal Function (0x01). Use after Open().
+func (mc *ModbusClient) FingerprintDevice(ctx context.Context, unitId uint8) (*ModbusFingerprint, error) {
+	mc.lock.Lock()
+	defer mc.lock.Unlock()
+
+	fp := &ModbusFingerprint{UnitId: unitId}
+	probes := allDetectionProbes()
+	for _, p := range probes {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+		req := &pdu{unitId: unitId, functionCode: p.fc, payload: p.payload}
+		res, err := mc.executeRequest(ctx, req)
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, err
+			}
+			continue
+		}
+
+		// Normal response → supported.
+		// Exception with code ≠ 0x01 (Illegal Function) → also supported
+		// (device recognises the FC but rejected the specific operation).
+		supported := false
+		if res.functionCode == req.functionCode {
+			supported = true
+		} else if isValidModbusException(req, res) && res.payload[0] != exIllegalFunction {
+			supported = true
+		}
+
+		switch p.fc {
+		case fcDiagnostics:
+			fp.SupportsFC08 = supported
+		case fcEncapsulatedInterface:
+			fp.SupportsFC43 = supported
+		case fcReadHoldingRegisters:
+			fp.SupportsFC03 = supported
+		case fcReadInputRegisters:
+			fp.SupportsFC04 = supported
+		case fcReadCoils:
+			fp.SupportsFC01 = supported
+		case fcReadDiscreteInputs:
+			fp.SupportsFC02 = supported
+		}
+	}
+	return fp, nil
+}
+
+// probe runs the detection probe sequence for one unit ID.
+// Caller must hold mc.lock. Returns (true, nil) on first structurally
+// validated Modbus response (normal or exception), (false, nil) on timeout
+// or invalid response, (false, err) on context or transport error.
+func (mc *ModbusClient) probe(ctx context.Context, unitId uint8) (bool, error) {
+	probes := probesForMode(mc.conf.DetectionMode)
 	for _, p := range probes {
 		select {
 		case <-ctx.Done():
@@ -1156,17 +1467,13 @@ func (mc *ModbusClient) probe(ctx context.Context, unitId uint8) (bool, error) {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return false, err
 			}
-			// Timeout, bad unit ID, protocol error, EOF, etc.: no valid Modbus response, try next probe
+			// Timeout, bad unit ID, protocol error, EOF, etc.:
+			// no valid Modbus response for this probe — try next.
 			continue
 		}
-		if res.functionCode != req.functionCode && res.functionCode != (req.functionCode|0x80) {
-			continue
+		if p.validate(req, res) {
+			return true, nil
 		}
-		// FC43 normal response: minimal valid payload is 6 bytes (MEI, readCode, conformity, moreFollows, nextObjId, objCount)
-		if res.functionCode == req.functionCode && req.functionCode == fcEncapsulatedInterface && len(res.payload) < 6 {
-			continue
-		}
-		return true, nil
 	}
 	return false, nil
 }
@@ -1655,6 +1962,101 @@ func (mc *ModbusClient) ReadFIFOQueue(ctx context.Context, unitId uint8, addr ui
 		mc.logger.Warningf("unexpected response code (%v)", res.functionCode)
 	}
 
+	return
+}
+
+// Diagnostics sends a Diagnostics request (FC 0x08). subFunction selects the
+// diagnostic (use DiagnosticSubFunction constants). data is optional request
+// data (sub-function-specific; use nil or empty for none). The response echoes
+// the sub-function and returns sub-function-specific data.
+func (mc *ModbusClient) Diagnostics(ctx context.Context, unitId uint8, subFunction DiagnosticSubFunction, data []byte) (dr *DiagnosticResponse, err error) {
+	var req *pdu
+	var res *pdu
+
+	mc.lock.Lock()
+	defer mc.lock.Unlock()
+
+	req = &pdu{
+		unitId:       unitId,
+		functionCode: fcDiagnostics,
+		payload:      uint16ToBytes(BigEndian, uint16(subFunction)),
+	}
+	if len(data) > 0 {
+		req.payload = append(req.payload, data...)
+	}
+
+	res, err = mc.executeRequest(ctx, req)
+	if err != nil {
+		return
+	}
+
+	switch res.functionCode {
+	case req.functionCode:
+		if len(res.payload) < 2 {
+			err = ErrProtocolError
+			return
+		}
+		dr = &DiagnosticResponse{
+			SubFunction: DiagnosticSubFunction(bytesToUint16(BigEndian, res.payload[0:2])),
+			Data:        res.payload[2:],
+		}
+	case (req.functionCode | 0x80):
+		if len(res.payload) != 1 {
+			err = ErrProtocolError
+			return
+		}
+		err = mapExceptionCodeToError(req.functionCode, res.payload[0])
+	default:
+		err = ErrProtocolError
+		mc.logger.Warningf("unexpected response code (%v)", res.functionCode)
+	}
+	return
+}
+
+// ReportServerId requests the Report Server ID (FC 0x11). The response contains
+// device-specific server ID, run indicator status, and optional additional data.
+func (mc *ModbusClient) ReportServerId(ctx context.Context, unitId uint8) (rs *ReportServerIdResponse, err error) {
+	var req *pdu
+	var res *pdu
+
+	mc.lock.Lock()
+	defer mc.lock.Unlock()
+
+	req = &pdu{
+		unitId:       unitId,
+		functionCode: fcReportServerId,
+	}
+
+	res, err = mc.executeRequest(ctx, req)
+	if err != nil {
+		return
+	}
+
+	switch res.functionCode {
+	case req.functionCode:
+		if len(res.payload) < 1 {
+			err = ErrProtocolError
+			return
+		}
+		byteCount := res.payload[0]
+		if len(res.payload) != 1+int(byteCount) {
+			err = ErrProtocolError
+			return
+		}
+		rs = &ReportServerIdResponse{
+			ByteCount: byteCount,
+			Data:      append([]byte(nil), res.payload[1:1+byteCount]...),
+		}
+	case (req.functionCode | 0x80):
+		if len(res.payload) != 1 {
+			err = ErrProtocolError
+			return
+		}
+		err = mapExceptionCodeToError(req.functionCode, res.payload[0])
+	default:
+		err = ErrProtocolError
+		mc.logger.Warningf("unexpected response code (%v)", res.functionCode)
+	}
 	return
 }
 

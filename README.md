@@ -88,11 +88,13 @@ cancellation control independent of the connection lifecycle.
 | 16 | 0x10 | Write Multiple Registers | `WriteRegisters`, `WriteUint32(s)`, `WriteUint64(s)`, `WriteFloat32(s)`, `WriteFloat64(s)`, `WriteBytes`, `WriteRawBytes` |
 | 20 | 0x14 | Read File Record | `ReadFileRecords` |
 | 21 | 0x15 | Write File Record | `WriteFileRecords` |
+| 08 | 0x08 | Diagnostics | `Diagnostics` |
+| 11 | 0x11 | Report Server ID | `ReportServerId` |
 | 23 | 0x17 | Read/Write Multiple Registers | `ReadWriteMultipleRegisters` |
 | 24 | 0x18 | Read FIFO Queue | `ReadFIFOQueue` |
 | 43/14 | 0x2B/0x0E | Read Device Identification | `ReadDeviceIdentification`, `ReadAllDeviceIdentification` |
 
-**Device detection:** `IsModbusDevice(ctx, unitId)` probes the target with read-only requests (FC43, FC03, FC04, FC01, FC02) and returns whether the given unit ID responds with Modbus-compliant structure. Caller chooses which unit IDs to try. See [API.md](API.md#28-modbus-device-detection).
+**Device detection:** `IsModbusDevice(ctx, unitId)` probes the target with read-only, structurally validated requests (FC08, FC43, FC03, FC04, FC01, FC02) and returns whether the given unit ID responds with Modbus-compliant structure. Configurable via `DetectionMode`: `DetectAggressive` (default, full sequence), `DetectStrict` (FC08/FC43/FC03), `DetectBasic` (FC03 only). `DetectUnitID(ctx)` scans all 256 unit IDs (0–255) and returns every responding one. `FingerprintDevice(ctx, unitId)` records which FCs the device supports. See [API.md](API.md#28-modbus-device-detection).
 
 ### Supported Go types
 

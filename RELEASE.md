@@ -1,5 +1,40 @@
 # Release Notes
 
+## v1.0.3 — 2026-03-01
+
+### New function code support
+
+- **FC08 Diagnostics** — New `Diagnostics(ctx, unitId, subFunction, data)` method. Supports all standard sub-functions (Return Query Data, Restart Communications, diagnostic counters, etc.). New exported types:
+  - `DiagnosticSubFunction` — typed `uint16` with 15 named constants (`DiagReturnQueryData`, `DiagRestartCommunications`, …, `DiagClearOverrunCounterAndFlag`) and a `String()` method for logging.
+  - `DiagnosticResponse` — holds the echoed `SubFunction` and sub-function-specific `Data`.
+- **FC17 Report Server ID** — New `ReportServerId(ctx, unitId)` method. Returns `*ReportServerIdResponse` with `ByteCount` and device-specific `Data` (server ID, run indicator status, optional additional data).
+- **RTU transport** — `expectedResponseLenth` updated for FC08 (variable-length, no byte-count field) and FC17 (byte-count-prefixed). New `readVariableLengthDiagnostics` reads FC08 responses by inter-frame silence (t3.5). Exception handling added for FC08|0x80 and FC17|0x80.
+
+### Scanner-grade Modbus device detection
+
+- **FC08 probe first** — `IsModbusDevice` now starts with FC08 Diagnostics (sub-function 0x0000 loopback) before FC43/FC03/FC04/FC01/FC02. FC08 is the safest probe: it does not touch device memory and even an "Illegal Function" exception is proof of Modbus. Normal FC08 echo responses are intentionally ignored (indistinguishable from TCP echo services at the PDU level).
+- **Per-probe structural validation** — Each probe now carries its own validate function that checks function-specific payload structure (byte counts, payload lengths) in addition to FC matching. This rejects non-Modbus traffic such as TCP echo services, HTTP on port 502, and random binary protocols.
+- **Exception-aware detection** — Any valid Modbus exception (codes 0x01–0x0B) is treated as strong positive detection. The new `isValidModbusException` helper enforces correct FC|0x80, single-byte payload, and valid exception code range.
+- **Detection modes** — New `ClientConfiguration.DetectionMode` field with three modes:
+  - `DetectAggressive` (default, zero value): FC08 → FC43 → FC03 → FC04 → FC01 → FC02.
+  - `DetectStrict`: FC08 → FC43 → FC03. Good speed/coverage balance.
+  - `DetectBasic`: FC03 only. Fastest single-probe check.
+- **`DetectUnitID(ctx)`** — New method that scans the full unit-ID range (0–255) and returns a slice of **all** responding unit IDs. Scan order: 1, 255, 0, then 2–254. On context cancellation the partial list found so far is returned alongside the error.
+- **`FingerprintDevice(ctx, unitId)`** — New method that runs all detection probes and records which FCs the device supports. Returns `*ModbusFingerprint` with per-FC boolean fields. A function is marked supported when the device responds normally or with a non-Illegal-Function exception.
+- **`ModbusFingerprint` struct** — New exported type with fields `SupportsFC08`, `SupportsFC43`, `SupportsFC03`, `SupportsFC04`, `SupportsFC01`, `SupportsFC02`.
+
+### Tests
+
+- Rewritten detection tests with proper MBAP frame-level mock servers (`readMBAPFrame`/`writeMBAPException`/`writeMBAPNormal` helpers) that handle the new multi-probe sequence correctly.
+- New tests: `TestIsModbusDevice_FC43ValidResponse`, `TestIsModbusDevice_ExceptionOnly`, `TestIsModbusDevice_PersistentTCPEcho_NotModbus`, `TestIsModbusDevice_DetectBasic_FC03Only`, `TestIsModbusDevice_DetectStrict`, `TestDetectUnitID_Found`, `TestDetectUnitID_NotFound`, `TestDetectUnitID_Unit1First`, `TestDetectUnitID_MultipleUnits`, `TestDetectUnitID_HighUnitID`, `TestFingerprintDevice`, `TestFingerprintDevice_ContextCanceled`, `TestIsValidModbusException`.
+
+### Documentation
+
+- **[API.md](API.md)** — New §2.9 Diagnostics and Report Server ID: full signatures, `DiagnosticSubFunction` constants, `DiagnosticResponse`, `ReportServerIdResponse`, examples. §2.8 rewritten: detection modes, probe table with per-FC validation details, `DetectUnitID`, `FingerprintDevice` with `ModbusFingerprint`. `ClientConfiguration` updated with `DetectionMode` field.
+- **[README.md](README.md)** — FC table updated with FC08 (`Diagnostics`) and FC17 (`ReportServerId`). Detection paragraph updated for new probe order, modes, `DetectUnitID`, and `FingerprintDevice`.
+
+---
+
 ## v1.0.2 — 2026-03-01
 
 ### Modbus device detection

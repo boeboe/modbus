@@ -17,6 +17,10 @@ All examples assume `import "github.com/boeboe/modbus"`.
    - [Advanced register operations (FC20/21/23/24)](#26-advanced-register-operations-fc20212324)
    - [Device identification (FC43)](#27-device-identification-fc43)
    - [Modbus device detection](#28-modbus-device-detection)
+     - [Detection modes](#detection-modes)
+     - [Unit-ID auto-detection](#unit-id-auto-detection)
+     - [Device fingerprinting](#device-fingerprinting)
+   - [Diagnostics and Report Server ID (FC08/0x11)](#29-diagnostics-and-report-server-id-fc080x11)
 3. [Server](#3-server)
    - [Configuration](#31-serverconfiguration)
    - [Lifecycle](#32-lifecycle)
@@ -103,6 +107,11 @@ type ClientConfiguration struct {
     // Values > 1 enable the connection pool for concurrent goroutines.
     // Applies to TCP-based transports only.
     MaxConns int
+
+    // DetectionMode controls which probes IsModbusDevice and DetectUnitID execute.
+    // DetectAggressive (default): FC08, FC43, FC03, FC04, FC01, FC02.
+    // DetectStrict: FC08, FC43, FC03. DetectBasic: FC03 only.
+    DetectionMode DetectionMode
 }
 ```
 
@@ -636,7 +645,9 @@ if err != nil {
 
 ### 2.8 Modbus device detection
 
-**IsModbusDevice** probes the target with a minimal, read-only request sequence to determine whether the given unit ID responds with Modbus-compliant structure (valid MBAP where applicable, normal or exception response). Use after **Open()**; it does not mutate server state. Probes FC43, FC03, FC04, FC01, FC02 in order; returns **true** on first valid response, **false** if none succeed. Which unit IDs to try (e.g. sweep 1..247) is left to the caller, consistent with other client APIs that take `unitId`.
+**IsModbusDevice** probes the target with a minimal, read-only request sequence to determine whether the given unit ID responds with Modbus-compliant structure (valid MBAP where applicable, structurally validated normal or exception response). Use after **Open()**; it does not mutate server state.
+
+Each probe carries a per-function structural validator that rejects non-Modbus traffic such as TCP echo services, HTTP on port 502, or random binary protocols. Exception responses with valid codes (0x01–0x0B) are treated as strong positive detection — even "Illegal Function" proves the remote end speaks Modbus.
 
 ```go
 func (mc *ModbusClient) IsModbusDevice(ctx context.Context, unitId uint8) (bool, error)
@@ -646,11 +657,9 @@ func (mc *ModbusClient) IsModbusDevice(ctx context.Context, unitId uint8) (bool,
 
 | Result | Meaning |
 |--------|--------|
-| `(true, nil)` | Confirmed Modbus (valid normal or exception response) |
+| `(true, nil)` | Confirmed Modbus (structurally valid normal or exception response) |
 | `(false, nil)` | No valid Modbus response for this unit ID |
 | `(false, err)` | Context cancelled or transport/internal error |
-
-**Probe order:** FC43 (Read Device Identification, Basic) → FC03 (Read Holding Registers, addr 0, qty 1) → FC04 (Read Input Registers) → FC01 (Read Coils) → FC02 (Read Discrete Inputs).
 
 **Example:**
 
@@ -677,6 +686,190 @@ for id := byte(1); id <= 247; id++ {
         break
     }
 }
+```
+
+#### Detection modes
+
+`ClientConfiguration.DetectionMode` controls which probes are executed:
+
+```go
+type DetectionMode int
+
+const (
+    DetectAggressive DetectionMode = iota // default: FC08, FC43, FC03, FC04, FC01, FC02
+    DetectStrict                          // FC08, FC43, FC03
+    DetectBasic                           // FC03 only
+)
+```
+
+| Mode | Probe sequence | Use case |
+|------|---------------|----------|
+| `DetectAggressive` (default) | FC08 → FC43 → FC03 → FC04 → FC01 → FC02 | Maximum coverage; scanner sweeps |
+| `DetectStrict` | FC08 → FC43 → FC03 | Good speed/coverage balance |
+| `DetectBasic` | FC03 | Fastest; assumes holding registers at addr 0 |
+
+**Probe details:**
+
+| Probe | FC | Request | Positive signal |
+|-------|-----|---------|----------------|
+| Diagnostics loopback | FC08 | Sub-function 0x0000, data 0x1234 | Exception only (normal echo is ambiguous with TCP echo) |
+| Device Identification | FC43 | Basic category, object 0 | Normal response ≥ 6 bytes, or any valid exception |
+| Read Holding Registers | FC03 | Address 0, quantity 1 | Normal: 3-byte payload (byte-count 2 + 2 data bytes), or any valid exception |
+| Read Input Registers | FC04 | Address 0, quantity 1 | Same as FC03 |
+| Read Coils | FC01 | Address 0, quantity 1 | Normal: 2-byte payload (byte-count 1 + 1 data byte), or any valid exception |
+| Read Discrete Inputs | FC02 | Address 0, quantity 1 | Same as FC01 |
+
+```go
+client, _ := modbus.NewClient(&modbus.ClientConfiguration{
+    URL:           "tcp://192.168.1.10:502",
+    DetectionMode: modbus.DetectStrict,
+})
+client.Open()
+ok, _ := client.IsModbusDevice(ctx, 1)
+```
+
+#### Unit-ID auto-detection
+
+**DetectUnitID** scans the full unit-ID range (0–255) and returns **every** unit ID that responds with a valid Modbus frame. The scan order is optimised for speed: common IDs first (1, 255, 0), then ascending 2–254.
+
+```go
+func (mc *ModbusClient) DetectUnitID(ctx context.Context) ([]uint8, error)
+```
+
+| Result | Meaning |
+|--------|--------|
+| `(ids, nil)` | `ids` contains all responding unit IDs (may be empty) |
+| `(partial, err)` | Context cancelled or transport error; `partial` contains IDs found so far |
+
+```go
+ids, err := client.DetectUnitID(ctx)
+if err != nil {
+    log.Fatal(err)
+}
+for _, id := range ids {
+    fmt.Printf("responding unit: %d\n", id)
+}
+```
+
+#### Device fingerprinting
+
+**FingerprintDevice** runs all detection probes against a unit and records which function codes the device supports. A function is marked as supported when the device returns a normal response or a non-Illegal-Function exception (meaning it recognises the FC but rejected the specific operation).
+
+```go
+func (mc *ModbusClient) FingerprintDevice(ctx context.Context, unitId uint8) (*ModbusFingerprint, error)
+
+type ModbusFingerprint struct {
+    UnitId       uint8
+    SupportsFC08 bool // Diagnostics
+    SupportsFC43 bool // Read Device Identification
+    SupportsFC03 bool // Read Holding Registers
+    SupportsFC04 bool // Read Input Registers
+    SupportsFC01 bool // Read Coils
+    SupportsFC02 bool // Read Discrete Inputs
+}
+```
+
+```go
+fp, err := client.FingerprintDevice(ctx, 1)
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Printf("FC03=%v FC43=%v FC08=%v\n", fp.SupportsFC03, fp.SupportsFC43, fp.SupportsFC08)
+```
+
+---
+
+### 2.9 Diagnostics and Report Server ID (FC08/0x11)
+
+#### Diagnostics (FC 0x08)
+
+Sends a Diagnostics request with a sub-function code and optional data. The response echoes the sub-function and returns sub-function-specific data. Use **DiagnosticSubFunction** constants for well-known sub-functions.
+
+```go
+func (mc *ModbusClient) Diagnostics(
+    ctx        context.Context,
+    unitId     uint8,
+    subFunction DiagnosticSubFunction,
+    data       []byte,
+) (*DiagnosticResponse, error)
+```
+
+**Sub-function type and constants:**
+
+```go
+type DiagnosticSubFunction uint16
+
+const (
+    DiagReturnQueryData                   DiagnosticSubFunction = 0x0000 // loopback
+    DiagRestartCommunications             DiagnosticSubFunction = 0x0001
+    DiagReturnDiagnosticRegister          DiagnosticSubFunction = 0x0002
+    DiagChangeASCIIInputDelimiter         DiagnosticSubFunction = 0x0003
+    DiagForceListenOnlyMode               DiagnosticSubFunction = 0x0004
+    DiagClearCountersAndDiagnosticReg     DiagnosticSubFunction = 0x000A
+    DiagReturnBusMessageCount             DiagnosticSubFunction = 0x000B
+    DiagReturnBusCommunicationErrorCount  DiagnosticSubFunction = 0x000C
+    DiagReturnBusExceptionErrorCount      DiagnosticSubFunction = 0x000D
+    DiagReturnServerMessageCount          DiagnosticSubFunction = 0x000E
+    DiagReturnServerNoResponseCount       DiagnosticSubFunction = 0x000F
+    DiagReturnServerNAKCount              DiagnosticSubFunction = 0x0010
+    DiagReturnServerBusyCount             DiagnosticSubFunction = 0x0011
+    DiagReturnBusCharacterOverrunCount    DiagnosticSubFunction = 0x0012
+    DiagClearOverrunCounterAndFlag        DiagnosticSubFunction = 0x0014
+)
+```
+
+`DiagnosticSubFunction` has a `String()` method for logging. Raw `uint16` values can be cast to `DiagnosticSubFunction` for reserved or vendor sub-functions.
+
+```go
+type DiagnosticResponse struct {
+    SubFunction DiagnosticSubFunction // echoed from request
+    Data        []byte                // sub-function-specific response data
+}
+```
+
+**Example — Return Query Data (loopback):**
+
+```go
+dr, err := client.Diagnostics(ctx, 1, modbus.DiagReturnQueryData, []byte{0x12, 0x34})
+if err != nil {
+    log.Fatal(err)
+}
+// dr.SubFunction == modbus.DiagReturnQueryData, dr.Data is the echoed request data
+```
+
+**Example — Return Diagnostic Register:**
+
+```go
+dr, err := client.Diagnostics(ctx, 1, modbus.DiagReturnDiagnosticRegister, nil)
+if err != nil {
+    log.Fatal(err)
+}
+// dr.Data contains 2 bytes (diagnostic register value, big-endian)
+```
+
+#### Report Server ID (FC 0x11)
+
+Requests the device-specific server ID, run indicator status, and optional additional data.
+
+```go
+func (mc *ModbusClient) ReportServerId(ctx context.Context, unitId uint8) (*ReportServerIdResponse, error)
+```
+
+```go
+type ReportServerIdResponse struct {
+    ByteCount uint8  // number of following bytes
+    Data      []byte // server ID, run indicator (0x00=OFF, 0xFF=ON), optional additional data
+}
+```
+
+**Example:**
+
+```go
+rs, err := client.ReportServerId(ctx, 1)
+if err != nil {
+    log.Fatal(err)
+}
+// rs.Data[0] often is server ID byte; last byte often is run indicator; layout is device-specific
 ```
 
 ---

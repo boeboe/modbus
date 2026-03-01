@@ -48,6 +48,10 @@ const (
 	fcReadWriteMultipleRegisters uint8 = 0x17
 	fcReadFifoQueue              uint8 = 0x18
 
+	// diagnostics and server ID (serial line / common).
+	fcDiagnostics    uint8 = 0x08
+	fcReportServerId uint8 = 0x11
+
 	// file access.
 	fcReadFileRecord        uint8 = 0x14
 	fcWriteFileRecord       uint8 = 0x15

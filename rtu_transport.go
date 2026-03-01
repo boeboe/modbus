@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"time"
 )
 
@@ -177,6 +178,11 @@ func (rt *rtuTransport) readRTUFrame() (res *pdu, err error) {
 		return
 	}
 
+	// FC08 Diagnostics has no length byte; read until inter-frame silence (t3.5)
+	if bytesNeeded == -1 {
+		return rt.readVariableLengthDiagnostics(rxbuf[:3])
+	}
+
 	// we need to read 2 additional bytes of CRC after the payload
 	bytesNeeded += 2
 
@@ -216,6 +222,57 @@ func (rt *rtuTransport) readRTUFrame() (res *pdu, err error) {
 	return
 }
 
+// readVariableLengthDiagnostics reads an FC08 Diagnostics response, which has no
+// byte-count field. It reads until inter-frame silence (t3.5) or the buffer is full.
+// header is the first 3 bytes already read: unitId, functionCode (0x08), subFuncHi.
+func (rt *rtuTransport) readVariableLengthDiagnostics(header []byte) (res *pdu, err error) {
+	const minFrameBytes = 6 // unitId(1) + fc(1) + subFunc(2) + crc(2)
+	var crc crc
+
+	buf := make([]byte, maxRTUFrameLength)
+	copy(buf, header)
+	offset := len(header)
+
+	for offset < maxRTUFrameLength {
+		err = rt.link.SetDeadline(time.Now().Add(rt.t35))
+		if err != nil {
+			return
+		}
+		n, readErr := rt.link.Read(buf[offset : offset+1])
+		if n > 0 {
+			offset += n
+			continue
+		}
+		if readErr != nil && os.IsTimeout(readErr) {
+			break
+		}
+		if readErr != nil {
+			err = readErr
+			return
+		}
+		break
+	}
+
+	if offset < minFrameBytes {
+		err = ErrShortFrame
+		return
+	}
+
+	crc.init()
+	crc.add(buf[:offset-2])
+	if !crc.isEqual(buf[offset-2], buf[offset-1]) {
+		err = ErrBadCRC
+		return
+	}
+
+	res = &pdu{
+		unitId:       buf[0],
+		functionCode: buf[1],
+		payload:      append([]byte(nil), buf[2:offset-2]...),
+	}
+	return
+}
+
 // Turns a PDU object into bytes.
 func (rt *rtuTransport) assembleRTUFrame(p *pdu) (adu []byte) {
 	var crc crc
@@ -235,20 +292,29 @@ func (rt *rtuTransport) assembleRTUFrame(p *pdu) (adu []byte) {
 }
 
 // Computes the expected length of a modbus RTU response.
-func expectedResponseLenth(responseCode uint8, responseLength uint8) (byteCount int, err error) {
+// For normal responses, the returned int is the number of payload bytes still to read
+// after the first 3 bytes (unitId, functionCode, first payload byte).
+// Return -1 for variable-length responses (FC08 Diagnostics); the caller must use
+// readVariableLengthDiagnostics.
+func expectedResponseLenth(responseCode uint8, responseLength uint8) (int, error) {
 	switch responseCode {
 	case fcReadHoldingRegisters,
 		fcReadInputRegisters,
 		fcReadCoils,
 		fcReadDiscreteInputs:
-		byteCount = int(responseLength)
+		return int(responseLength), nil
 	case fcWriteSingleRegister,
 		fcWriteMultipleRegisters,
 		fcWriteSingleCoil,
 		fcWriteMultipleCoils:
-		byteCount = 3
+		return 3, nil
 	case fcMaskWriteRegister:
-		byteCount = 5
+		return 5, nil
+	case fcDiagnostics:
+		// Variable-length PDU — no byte-count field.
+		return -1, nil
+	case fcReportServerId:
+		return int(responseLength), nil
 	case fcReadHoldingRegisters | 0x80,
 		fcReadInputRegisters | 0x80,
 		fcReadCoils | 0x80,
@@ -257,13 +323,13 @@ func expectedResponseLenth(responseCode uint8, responseLength uint8) (byteCount 
 		fcWriteMultipleRegisters | 0x80,
 		fcWriteSingleCoil | 0x80,
 		fcWriteMultipleCoils | 0x80,
-		fcMaskWriteRegister | 0x80:
-		byteCount = 0
+		fcMaskWriteRegister | 0x80,
+		fcDiagnostics | 0x80,
+		fcReportServerId | 0x80:
+		return 0, nil
 	default:
-		err = ErrProtocolError
+		return 0, ErrProtocolError
 	}
-
-	return
 }
 
 // Discards the contents of the link's rx buffer, eating up to 1kB of data.
