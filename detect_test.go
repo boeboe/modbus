@@ -943,6 +943,15 @@ func TestFingerprintDevice(t *testing.T) {
 	if fp.SupportsFC02 {
 		t.Error("SupportsFC02: expected false (Illegal Function)")
 	}
+	if fp.SupportsFC11 {
+		t.Error("SupportsFC11: expected false (Illegal Function)")
+	}
+	if fp.SupportsFC18 {
+		t.Error("SupportsFC18: expected false (Illegal Function)")
+	}
+	if fp.SupportsFC20 {
+		t.Error("SupportsFC20: expected false (Illegal Function)")
+	}
 }
 
 // TestFingerprintDevice_ContextCanceled verifies error propagation.

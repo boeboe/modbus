@@ -142,12 +142,15 @@ type DeviceIdentification struct {
 // Use FingerprintDevice to populate.
 type ModbusFingerprint struct {
 	UnitId       uint8
-	SupportsFC08 bool // Diagnostics
-	SupportsFC43 bool // Read Device Identification
-	SupportsFC03 bool // Read Holding Registers
-	SupportsFC04 bool // Read Input Registers
 	SupportsFC01 bool // Read Coils
 	SupportsFC02 bool // Read Discrete Inputs
+	SupportsFC03 bool // Read Holding Registers
+	SupportsFC04 bool // Read Input Registers
+	SupportsFC08 bool // Diagnostics
+	SupportsFC11 bool // Report Server ID
+	SupportsFC18 bool // Read FIFO Queue
+	SupportsFC20 bool // Read File Record
+	SupportsFC43 bool // Read Device Identification
 }
 
 // DiagnosticSubFunction is the two-byte sub-function code for Diagnostics (FC 0x08).
@@ -1324,6 +1327,40 @@ func allDetectionProbes() []detectionProbe {
 					len(res.payload) == 2 && res.payload[0] == 1
 			},
 		},
+		// FC11 Report Server ID (no request data).
+		{
+			fc:      fcReportServerId,
+			payload: nil,
+			validate: func(req, res *pdu) bool {
+				if isValidModbusException(req, res) {
+					return true
+				}
+				return res.functionCode == req.functionCode && len(res.payload) >= 1
+			},
+		},
+		// FC18 Read FIFO Queue (FIFO pointer addr 0).
+		{
+			fc:      fcReadFifoQueue,
+			payload: uint16ToBytes(BigEndian, 0),
+			validate: func(req, res *pdu) bool {
+				if isValidModbusException(req, res) {
+					return true
+				}
+				// Normal FC18: byte count (2) + FIFO count (2) + data.
+				return res.functionCode == req.functionCode && len(res.payload) >= 4
+			},
+		},
+		// FC20 Read File Record (one sub-request: file 1, record 0, length 1).
+		{
+			fc:      fcReadFileRecord,
+			payload: []byte{7, 0x06, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01}, // byte count 7; refType 6, file 1, rec 0, len 1
+			validate: func(req, res *pdu) bool {
+				if isValidModbusException(req, res) {
+					return true
+				}
+				return res.functionCode == req.functionCode && len(res.payload) >= 1
+			},
+		},
 	}
 }
 
@@ -1434,6 +1471,12 @@ func (mc *ModbusClient) FingerprintDevice(ctx context.Context, unitId uint8) (*M
 		switch p.fc {
 		case fcDiagnostics:
 			fp.SupportsFC08 = supported
+		case fcReportServerId:
+			fp.SupportsFC11 = supported
+		case fcReadFifoQueue:
+			fp.SupportsFC18 = supported
+		case fcReadFileRecord:
+			fp.SupportsFC20 = supported
 		case fcEncapsulatedInterface:
 			fp.SupportsFC43 = supported
 		case fcReadHoldingRegisters:

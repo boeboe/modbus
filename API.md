@@ -759,13 +759,16 @@ for _, id := range ids {
 func (mc *ModbusClient) FingerprintDevice(ctx context.Context, unitId uint8) (*ModbusFingerprint, error)
 
 type ModbusFingerprint struct {
-    UnitId       uint8
-    SupportsFC08 bool // Diagnostics
-    SupportsFC43 bool // Read Device Identification
-    SupportsFC03 bool // Read Holding Registers
-    SupportsFC04 bool // Read Input Registers
-    SupportsFC01 bool // Read Coils
-    SupportsFC02 bool // Read Discrete Inputs
+    UnitId        uint8
+    SupportsFC01  bool // Read Coils
+    SupportsFC02  bool // Read Discrete Inputs
+    SupportsFC03  bool // Read Holding Registers
+    SupportsFC04  bool // Read Input Registers
+    SupportsFC08  bool // Diagnostics
+    SupportsFC11  bool // Report Server ID
+    SupportsFC18  bool // Read FIFO Queue
+    SupportsFC20  bool // Read File Record
+    SupportsFC43  bool // Read Device Identification
 }
 ```
 
@@ -774,7 +777,7 @@ fp, err := client.FingerprintDevice(ctx, 1)
 if err != nil {
     log.Fatal(err)
 }
-fmt.Printf("FC03=%v FC43=%v FC08=%v\n", fp.SupportsFC03, fp.SupportsFC43, fp.SupportsFC08)
+fmt.Printf("FC03=%v FC43=%v FC08=%v FC11=%v\n", fp.SupportsFC03, fp.SupportsFC43, fp.SupportsFC08, fp.SupportsFC11)
 ```
 
 ---
