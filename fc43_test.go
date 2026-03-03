@@ -43,8 +43,8 @@ func TestReadDeviceIdentification(t *testing.T) {
 
 		if req[2] != 0x00 || req[3] != 0x00 ||
 			req[4] != 0x00 || req[5] != 0x05 ||
-			req[7] != fcEncapsulatedInterface ||
-			req[8] != meiReadDeviceIdentification ||
+			req[7] != byte(FCEncapsulatedInterface) ||
+			req[8] != byte(MEIReadDeviceIdentification) ||
 			req[9] != ReadDeviceIdBasic || req[10] != 0x00 {
 			return
 		}
@@ -53,7 +53,7 @@ func TestReadDeviceIdentification(t *testing.T) {
 		unitId = req[6]
 
 		payload = []byte{
-			meiReadDeviceIdentification,
+			byte(MEIReadDeviceIdentification),
 			ReadDeviceIdBasic,
 			0x01,
 			0x00,
@@ -68,7 +68,7 @@ func TestReadDeviceIdentification(t *testing.T) {
 			0x00, 0x00,
 			0x00, byte(2 + len(payload)),
 			unitId,
-			fcEncapsulatedInterface,
+			byte(FCEncapsulatedInterface),
 		}, payload...))
 	}()
 
@@ -147,8 +147,8 @@ func TestReadDeviceIdentificationException(t *testing.T) {
 			0x00, 0x00,
 			0x00, 0x03,
 			unitId,
-			(fcEncapsulatedInterface | 0x80),
-			exIllegalFunction,
+			byte(FCEncapsulatedInterface) | 0x80,
+			byte(exIllegalFunction),
 		})
 	}()
 
@@ -224,8 +224,8 @@ func TestReadAllDeviceIdentification(t *testing.T) {
 		// ReadAllDeviceIdentification sends readDeviceIdCode 0x03 (Extended), objectId 0x00
 		if req[2] != 0x00 || req[3] != 0x00 ||
 			req[4] != 0x00 || req[5] != 0x05 ||
-			req[7] != fcEncapsulatedInterface ||
-			req[8] != meiReadDeviceIdentification ||
+			req[7] != byte(FCEncapsulatedInterface) ||
+			req[8] != byte(MEIReadDeviceIdentification) ||
 			req[9] != ReadDeviceIdExtended || req[10] != 0x00 {
 			return
 		}
@@ -235,7 +235,7 @@ func TestReadAllDeviceIdentification(t *testing.T) {
 
 		// Simulate device that supports regular: basic (0x00–0x02) + VendorUrl (0x03), ProductName (0x04)
 		payload = []byte{
-			meiReadDeviceIdentification,
+			byte(MEIReadDeviceIdentification),
 			ReadDeviceIdExtended,
 			0x02, // conformity level: regular
 			0x00, 0x00,
@@ -252,7 +252,7 @@ func TestReadAllDeviceIdentification(t *testing.T) {
 			0x00, 0x00,
 			0x00, byte(2 + len(payload)),
 			unitId,
-			fcEncapsulatedInterface,
+			byte(FCEncapsulatedInterface),
 		}, payload...))
 	}()
 

@@ -5,97 +5,246 @@ import (
 	"fmt"
 )
 
+//
+// Typed Protocol Primitives
+//
+
+type FunctionCode uint8
+type ExceptionCode uint8
+type MEIType uint8
+
+//
+// PDU
+//
+
 type pdu struct {
 	unitId       uint8
-	functionCode uint8
+	functionCode FunctionCode
 	payload      []byte
 }
 
-// ExceptionError is returned by client methods when the remote device responds
-// with a Modbus exception. It gives callers structured access to the raw function
-// and exception codes while remaining compatible with errors.Is / errors.As:
 //
-//	var excErr *modbus.ExceptionError
-//	if errors.As(err, &excErr) {
-//	    fmt.Printf("fc=0x%02x exception=0x%02x\n", excErr.FunctionCode, excErr.ExceptionCode)
-//	}
-//	if errors.Is(err, modbus.ErrIllegalDataAddress) { ... }
+// Exception Handling
+//
+
+// ExceptionError is returned by client methods when the remote device responds
+// with a Modbus exception.
+//
+//	errors.As(err, &excErr)
+//	errors.Is(err, modbus.ErrIllegalDataAddress)
 type ExceptionError struct {
-	FunctionCode  byte  // originating Modbus function code (high bit clear)
-	ExceptionCode byte  // raw Modbus exception code (0x01–0x0b)
-	Sentinel      error // one of the Err* sentinel variables below
+	FunctionCode  FunctionCode
+	ExceptionCode ExceptionCode
+	Sentinel      error
 }
 
-func (e *ExceptionError) Error() string        { return e.Sentinel.Error() }
+func (e *ExceptionError) Error() string {
+	return fmt.Sprintf("%s: %s", e.FunctionCode.Base(), e.ExceptionCode)
+}
 func (e *ExceptionError) Unwrap() error        { return e.Sentinel }
 func (e *ExceptionError) Is(target error) bool { return target == e.Sentinel }
 
-const (
-	// coils.
-	fcReadCoils          uint8 = 0x01
-	fcWriteSingleCoil    uint8 = 0x05
-	fcWriteMultipleCoils uint8 = 0x0f
-
-	// discrete inputs.
-	fcReadDiscreteInputs uint8 = 0x02
-
-	// 16-bit input/holding registers.
-	fcReadHoldingRegisters       uint8 = 0x03
-	fcReadInputRegisters         uint8 = 0x04
-	fcWriteSingleRegister        uint8 = 0x06
-	fcWriteMultipleRegisters     uint8 = 0x10
-	fcMaskWriteRegister          uint8 = 0x16
-	fcReadWriteMultipleRegisters uint8 = 0x17
-	fcReadFifoQueue              uint8 = 0x18
-
-	// diagnostics and server ID (serial line / common).
-	fcDiagnostics    uint8 = 0x08
-	fcReportServerId uint8 = 0x11
-
-	// file access.
-	fcReadFileRecord        uint8 = 0x14
-	fcWriteFileRecord       uint8 = 0x15
-	fcEncapsulatedInterface uint8 = 0x2b
-
-	// encapsulated interface (FC43) MEI types.
-	meiReadDeviceIdentification uint8 = 0x0e
-)
-
-// Read Device ID codes for FC43 (Read Device Identification).
-// Use with ReadDeviceIdentification; ReadAllDeviceIdentification uses Extended internally.
-const (
-	ReadDeviceIdBasic      = 0x01 // Basic: VendorName, ProductCode, MajorMinorRevision (mandatory)
-	ReadDeviceIdRegular    = 0x02 // Regular: Basic + VendorUrl, ProductName, ModelName, UserApplicationName
-	ReadDeviceIdExtended   = 0x03 // Extended: Regular + private/vendor objects (0x80–0xFF)
-	ReadDeviceIdIndividual = 0x04 // Individual: request a single object by objectId
-)
+//
+// Function Codes (Public FC)
+//
 
 const (
-	// exception codes.
-	exIllegalFunction         uint8 = 0x01
-	exIllegalDataAddress      uint8 = 0x02
-	exIllegalDataValue        uint8 = 0x03
-	exServerDeviceFailure     uint8 = 0x04
-	exAcknowledge             uint8 = 0x05
-	exServerDeviceBusy        uint8 = 0x06
-	exMemoryParityError       uint8 = 0x08
-	exGWPathUnavailable       uint8 = 0x0a
-	exGWTargetFailedToRespond uint8 = 0x0b
-
-	// Modbus protocol limits used for coil/register access validation.
-	maxReadCoils      = 2000 // FC01/FC02: max coils per read request
-	maxWriteCoils     = 1968 // FC15:      max coils per write request (0x7b0)
-	maxReadRegisters  = 125  // FC03/FC04: max registers per read request
-	maxWriteRegisters = 123  // FC16:      max registers per write request
-	maxRWReadRegs     = 125  // FC23:      max registers to read  (0x7D)
-	maxRWWriteRegs    = 121  // FC23:      max registers to write (0x79)
-	maxFIFOCount      = 31   // FC24:      max register count returned in FIFO queue
-	maxFileByteCount  = 0xF5 // FC20:      max byte count in read-file-record request
-	maxFileReqDataLen = 0xFB // FC21:      max request data length in write-file-record
+	FCReadCoils              FunctionCode = 0x01
+	FCReadDiscreteInputs     FunctionCode = 0x02
+	FCReadHoldingRegisters   FunctionCode = 0x03
+	FCReadInputRegisters     FunctionCode = 0x04
+	FCWriteSingleCoil        FunctionCode = 0x05
+	FCWriteSingleRegister    FunctionCode = 0x06
+	FCDiagnostics            FunctionCode = 0x08
+	FCWriteMultipleCoils     FunctionCode = 0x0F
+	FCWriteMultipleRegisters FunctionCode = 0x10
+	FCReportServerID         FunctionCode = 0x11
+	FCReadFileRecord         FunctionCode = 0x14
+	FCWriteFileRecord        FunctionCode = 0x15
+	FCMaskWriteRegister      FunctionCode = 0x16
+	FCReadWriteMultipleRegs  FunctionCode = 0x17
+	FCReadFIFOQueue          FunctionCode = 0x18
+	FCEncapsulatedInterface  FunctionCode = 0x2B
 )
 
-// Sentinel error variables. Use errors.Is to test for a specific condition;
-// use errors.As with *ExceptionError to inspect Modbus exception details.
+var functionCodeNames = map[FunctionCode]string{
+	FCReadCoils:              "Read Coils",
+	FCReadDiscreteInputs:     "Read Discrete Inputs",
+	FCReadHoldingRegisters:   "Read Holding Registers",
+	FCReadInputRegisters:     "Read Input Registers",
+	FCWriteSingleCoil:        "Write Single Coil",
+	FCWriteSingleRegister:    "Write Single Register",
+	FCDiagnostics:            "Diagnostics",
+	FCWriteMultipleCoils:     "Write Multiple Coils",
+	FCWriteMultipleRegisters: "Write Multiple Registers",
+	FCReportServerID:         "Report Server ID",
+	FCReadFileRecord:         "Read File Record",
+	FCWriteFileRecord:        "Write File Record",
+	FCMaskWriteRegister:      "Mask Write Register",
+	FCReadWriteMultipleRegs:  "Read/Write Multiple Registers",
+	FCReadFIFOQueue:          "Read FIFO Queue",
+	FCEncapsulatedInterface:  "Encapsulated Interface",
+}
+
+// IsException reports whether the function code has the Modbus exception bit set (MSB).
+func (fc FunctionCode) IsException() bool {
+	return uint8(fc)&0x80 != 0
+}
+
+// Base returns the function code with the exception bit cleared.
+func (fc FunctionCode) Base() FunctionCode {
+	return FunctionCode(uint8(fc) & 0x7F)
+}
+
+// String returns a human-readable name and the raw value (e.g. "Read Holding Registers (0x03)" or "Read Holding Registers Exception (0x83)").
+func (fc FunctionCode) String() string {
+	base := fc.Base()
+	name, ok := functionCodeNames[base]
+	if !ok {
+		return fmt.Sprintf("Unknown Function (0x%02X)", uint8(fc))
+	}
+	if fc.IsException() {
+		return fmt.Sprintf("%s Exception (0x%02X)", name, uint8(fc))
+	}
+	return fmt.Sprintf("%s (0x%02X)", name, uint8(fc))
+}
+
+// Valid reports whether the function code (after stripping the exception bit) is a known public function code.
+func (fc FunctionCode) Valid() bool {
+	_, ok := functionCodeNames[fc.Base()]
+	return ok
+}
+
+// KnownFunctionCodes returns all supported base function codes (no exception variants).
+func KnownFunctionCodes() []FunctionCode {
+	return []FunctionCode{
+		FCReadCoils,
+		FCReadDiscreteInputs,
+		FCReadHoldingRegisters,
+		FCReadInputRegisters,
+		FCWriteSingleCoil,
+		FCWriteSingleRegister,
+		FCDiagnostics,
+		FCWriteMultipleCoils,
+		FCWriteMultipleRegisters,
+		FCReportServerID,
+		FCReadFileRecord,
+		FCWriteFileRecord,
+		FCMaskWriteRegister,
+		FCReadWriteMultipleRegs,
+		FCReadFIFOQueue,
+		FCEncapsulatedInterface,
+	}
+}
+
+// ParseFunctionCode validates a raw byte as a known Modbus function code (normal or exception) and returns it as FunctionCode.
+func ParseFunctionCode(b byte) (FunctionCode, error) {
+	fc := FunctionCode(b)
+	if !fc.Base().Valid() {
+		return 0, fmt.Errorf("modbus: invalid function code 0x%02X", b)
+	}
+	return fc, nil
+}
+
+//
+// Encapsulated Interface (FC43)
+//
+
+const (
+	MEIReadDeviceIdentification MEIType = 0x0E
+)
+
+// FC43 Read Device ID object types.
+const (
+	ReadDeviceIdBasic      = 0x01
+	ReadDeviceIdRegular    = 0x02
+	ReadDeviceIdExtended   = 0x03
+	ReadDeviceIdIndividual = 0x04
+)
+
+//
+// Exception Codes
+//
+
+const (
+	exIllegalFunction         ExceptionCode = 0x01
+	exIllegalDataAddress      ExceptionCode = 0x02
+	exIllegalDataValue        ExceptionCode = 0x03
+	exServerDeviceFailure     ExceptionCode = 0x04
+	exAcknowledge             ExceptionCode = 0x05
+	exServerDeviceBusy        ExceptionCode = 0x06
+	exMemoryParityError       ExceptionCode = 0x08
+	exGWPathUnavailable       ExceptionCode = 0x0A
+	exGWTargetFailedToRespond ExceptionCode = 0x0B
+)
+
+var exceptionCodeNames = map[ExceptionCode]string{
+	exIllegalFunction:         "Illegal Function",
+	exIllegalDataAddress:      "Illegal Data Address",
+	exIllegalDataValue:        "Illegal Data Value",
+	exServerDeviceFailure:     "Server Device Failure",
+	exAcknowledge:             "Acknowledge",
+	exServerDeviceBusy:        "Server Device Busy",
+	exMemoryParityError:       "Memory Parity Error",
+	exGWPathUnavailable:       "Gateway Path Unavailable",
+	exGWTargetFailedToRespond: "Gateway Target Failed To Respond",
+}
+
+// String returns a human-readable name and the raw value (e.g. "Illegal Data Address (0x02)").
+func (ec ExceptionCode) String() string {
+	name, ok := exceptionCodeNames[ec]
+	if !ok {
+		return fmt.Sprintf("Unknown Exception (0x%02X)", uint8(ec))
+	}
+	return fmt.Sprintf("%s (0x%02X)", name, uint8(ec))
+}
+
+// ToError returns the corresponding sentinel error for known exception codes, or fmt.Errorf for unknown codes.
+func (ec ExceptionCode) ToError() error {
+	switch ec {
+	case exIllegalFunction:
+		return ErrIllegalFunction
+	case exIllegalDataAddress:
+		return ErrIllegalDataAddress
+	case exIllegalDataValue:
+		return ErrIllegalDataValue
+	case exServerDeviceFailure:
+		return ErrServerDeviceFailure
+	case exAcknowledge:
+		return ErrAcknowledge
+	case exMemoryParityError:
+		return ErrMemoryParityError
+	case exServerDeviceBusy:
+		return ErrServerDeviceBusy
+	case exGWPathUnavailable:
+		return ErrGWPathUnavailable
+	case exGWTargetFailedToRespond:
+		return ErrGWTargetFailedToRespond
+	default:
+		return fmt.Errorf("modbus: unknown exception code (0x%02X)", uint8(ec))
+	}
+}
+
+//
+// Protocol Limits
+//
+
+const (
+	maxReadCoils      = 2000
+	maxWriteCoils     = 1968
+	maxReadRegisters  = 125
+	maxWriteRegisters = 123
+	maxRWReadRegs     = 125
+	maxRWWriteRegs    = 121
+	maxFIFOCount      = 31
+	maxFileByteCount  = 0xF5
+	maxFileReqDataLen = 0xFB
+)
+
+//
+// Sentinel Errors
+//
+
 var (
 	ErrConfigurationError      = errors.New("modbus: configuration error")
 	ErrRequestTimedOut         = errors.New("modbus: request timed out")
@@ -117,70 +266,43 @@ var (
 	ErrUnexpectedParameters    = errors.New("modbus: unexpected parameters")
 )
 
-// mapExceptionCodeToError converts a Modbus exception code into an *ExceptionError
-// that wraps the appropriate sentinel so both errors.Is and errors.As work for
-// callers.
-func mapExceptionCodeToError(functionCode uint8, exceptionCode uint8) (err error) {
-	var sentinel error
+//
+// Exception Mapping
+//
 
-	switch exceptionCode {
-	case exIllegalFunction:
-		sentinel = ErrIllegalFunction
-	case exIllegalDataAddress:
-		sentinel = ErrIllegalDataAddress
-	case exIllegalDataValue:
-		sentinel = ErrIllegalDataValue
-	case exServerDeviceFailure:
-		sentinel = ErrServerDeviceFailure
-	case exAcknowledge:
-		sentinel = ErrAcknowledge
-	case exMemoryParityError:
-		sentinel = ErrMemoryParityError
-	case exServerDeviceBusy:
-		sentinel = ErrServerDeviceBusy
-	case exGWPathUnavailable:
-		sentinel = ErrGWPathUnavailable
-	case exGWTargetFailedToRespond:
-		sentinel = ErrGWTargetFailedToRespond
-	default:
-		err = fmt.Errorf("modbus: unknown exception code (0x%02x)", exceptionCode)
-		return
+func mapExceptionCodeToError(fc FunctionCode, ec ExceptionCode) error {
+	sentinel := ec.ToError()
+	if _, ok := exceptionCodeNames[ec]; !ok {
+		return sentinel
 	}
-
-	err = &ExceptionError{
-		FunctionCode:  functionCode,
-		ExceptionCode: exceptionCode,
+	return &ExceptionError{
+		FunctionCode:  fc,
+		ExceptionCode: ec,
 		Sentinel:      sentinel,
 	}
-
-	return
 }
 
-// mapErrorToExceptionCode converts an error into a Modbus exception code for use
-// in server responses. It uses errors.Is so wrapped errors are handled correctly.
-func mapErrorToExceptionCode(err error) (exceptionCode uint8) {
+func mapErrorToExceptionCode(err error) ExceptionCode {
 	switch {
 	case errors.Is(err, ErrIllegalFunction):
-		exceptionCode = exIllegalFunction
+		return exIllegalFunction
 	case errors.Is(err, ErrIllegalDataAddress):
-		exceptionCode = exIllegalDataAddress
+		return exIllegalDataAddress
 	case errors.Is(err, ErrIllegalDataValue):
-		exceptionCode = exIllegalDataValue
+		return exIllegalDataValue
 	case errors.Is(err, ErrServerDeviceFailure):
-		exceptionCode = exServerDeviceFailure
+		return exServerDeviceFailure
 	case errors.Is(err, ErrAcknowledge):
-		exceptionCode = exAcknowledge
+		return exAcknowledge
 	case errors.Is(err, ErrMemoryParityError):
-		exceptionCode = exMemoryParityError
+		return exMemoryParityError
 	case errors.Is(err, ErrServerDeviceBusy):
-		exceptionCode = exServerDeviceBusy
+		return exServerDeviceBusy
 	case errors.Is(err, ErrGWPathUnavailable):
-		exceptionCode = exGWPathUnavailable
+		return exGWPathUnavailable
 	case errors.Is(err, ErrGWTargetFailedToRespond):
-		exceptionCode = exGWTargetFailedToRespond
+		return exGWTargetFailedToRespond
 	default:
-		exceptionCode = exServerDeviceFailure
+		return exServerDeviceFailure
 	}
-
-	return
 }

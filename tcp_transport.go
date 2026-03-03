@@ -202,7 +202,7 @@ func (tt *tcpTransport) readMBAPFrame() (p *pdu, txnId uint16, err error) {
 	// store unit id, function code and payload in the PDU object
 	p = &pdu{
 		unitId:       unitId,
-		functionCode: rxbuf[0],
+		functionCode: FunctionCode(rxbuf[0]),
 		payload:      rxbuf[1:],
 	}
 
@@ -220,7 +220,7 @@ func (tt *tcpTransport) assembleMBAPFrame(txnId uint16, p *pdu) (payload []byte)
 	// unit identifier
 	payload = append(payload, p.unitId)
 	// function code
-	payload = append(payload, p.functionCode)
+	payload = append(payload, byte(p.functionCode))
 	// payload
 	payload = append(payload, p.payload...)
 

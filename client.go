@@ -35,22 +35,6 @@ const (
 	LowWordFirst  WordOrder = 2
 )
 
-// DetectionMode controls the probe sequence used by IsModbusDevice.
-// The zero value (DetectAggressive) uses the full probe set for maximum coverage.
-type DetectionMode int
-
-const (
-	// DetectAggressive uses the full probe sequence: FC08, FC43, FC03, FC04, FC01, FC02.
-	// This is the default (zero value) and provides the highest detection confidence.
-	DetectAggressive DetectionMode = iota
-	// DetectStrict uses a reduced probe set: FC08, FC43, FC03.
-	// Good balance between speed and coverage.
-	DetectStrict
-	// DetectBasic uses only FC03 (Read Holding Registers, addr 0, qty 1).
-	// Fastest but may miss devices that don't implement FC03.
-	DetectBasic
-)
-
 // Modbus client configuration object.
 type ClientConfiguration struct {
 	// URL sets the client mode and target location in the form
@@ -100,11 +84,6 @@ type ClientConfiguration struct {
 	// Applies only to TCP-based transports. Zero and 1 both mean a single connection
 	// (no pool). Values greater than 1 allocate a pool of up to MaxConns connections.
 	MaxConns int
-
-	// DetectionMode controls which probes IsModbusDevice and DetectUnitID execute.
-	// DetectAggressive (default, zero value) uses the full set: FC08, FC43, FC03, FC04, FC01, FC02.
-	// DetectStrict uses FC08, FC43, FC03. DetectBasic uses FC03 only.
-	DetectionMode DetectionMode
 }
 
 // Modbus client object.
@@ -134,23 +113,6 @@ type DeviceIdentification struct {
 	MoreFollows      uint8
 	NextObjectId     uint8
 	Objects          []DeviceIdentificationObject
-}
-
-// ModbusFingerprint records which function codes a unit actively supports.
-// A function is marked as supported when the device responds with a non-exception
-// normal response, or with an exception other than Illegal Function (0x01).
-// Use FingerprintDevice to populate.
-type ModbusFingerprint struct {
-	UnitId       uint8
-	SupportsFC01 bool // Read Coils
-	SupportsFC02 bool // Read Discrete Inputs
-	SupportsFC03 bool // Read Holding Registers
-	SupportsFC04 bool // Read Input Registers
-	SupportsFC08 bool // Diagnostics
-	SupportsFC11 bool // Report Server ID
-	SupportsFC18 bool // Read FIFO Queue
-	SupportsFC20 bool // Read File Record
-	SupportsFC43 bool // Read Device Identification
 }
 
 // DiagnosticSubFunction is the two-byte sub-function code for Diagnostics (FC 0x08).
@@ -1134,8 +1096,8 @@ func (mc *ModbusClient) ReadDeviceIdentification(ctx context.Context, unitId uin
 	for {
 		req = &pdu{
 			unitId:       unitId,
-			functionCode: fcEncapsulatedInterface,
-			payload:      []byte{meiReadDeviceIdentification, readDeviceIdCode, nextObjId},
+			functionCode: FCEncapsulatedInterface,
+			payload:      []byte{byte(MEIReadDeviceIdentification), readDeviceIdCode, nextObjId},
 		}
 
 		res, err = mc.executeRequest(ctx, req)
@@ -1150,7 +1112,7 @@ func (mc *ModbusClient) ReadDeviceIdentification(ctx context.Context, unitId uin
 				return
 			}
 
-			if res.payload[0] != meiReadDeviceIdentification {
+			if res.payload[0] != byte(MEIReadDeviceIdentification) {
 				err = ErrProtocolError
 				return
 			}
@@ -1205,13 +1167,13 @@ func (mc *ModbusClient) ReadDeviceIdentification(ctx context.Context, unitId uin
 			}
 			return
 
-		case (req.functionCode | 0x80):
+		case FunctionCode(uint8(req.functionCode) | 0x80):
 			if len(res.payload) != 1 {
 				err = ErrProtocolError
 				return
 			}
 
-			err = mapExceptionCodeToError(req.functionCode, res.payload[0])
+			err = mapExceptionCodeToError(req.functionCode, ExceptionCode(res.payload[0]))
 			return
 
 		default:
@@ -1231,9 +1193,9 @@ func (mc *ModbusClient) ReadAllDeviceIdentification(ctx context.Context, unitId 
 	return mc.ReadDeviceIdentification(ctx, unitId, ReadDeviceIdExtended, 0x00)
 }
 
-// detectionProbe is one entry in the probe sequence used by IsModbusDevice.
+// detectionProbe is one entry in the probe set used by HasUnitReadFunction.
 type detectionProbe struct {
-	fc       uint8
+	fc       FunctionCode
 	payload  []byte
 	validate func(req, res *pdu) bool
 }
@@ -1242,7 +1204,7 @@ type detectionProbe struct {
 // function code equals req FC | 0x80 and payload is a single byte in the valid
 // exception code range (0x01–0x0B).
 func isValidModbusException(req, res *pdu) bool {
-	return res.functionCode == (req.functionCode|0x80) &&
+	return res.functionCode == FunctionCode(uint8(req.functionCode)|0x80) &&
 		len(res.payload) == 1 &&
 		res.payload[0] >= 0x01 && res.payload[0] <= 0x0b
 }
@@ -1257,7 +1219,7 @@ func allDetectionProbes() []detectionProbe {
 		// Only exception responses count as positive detection; a normal loopback
 		// echo is indistinguishable from a TCP echo service at the PDU level.
 		{
-			fc:      fcDiagnostics,
+			fc:      FCDiagnostics,
 			payload: []byte{0x00, 0x00, 0x12, 0x34},
 			validate: func(req, res *pdu) bool {
 				return isValidModbusException(req, res)
@@ -1265,8 +1227,8 @@ func allDetectionProbes() []detectionProbe {
 		},
 		// FC43 Read Device Identification (Basic category, starting at object 0).
 		{
-			fc:      fcEncapsulatedInterface,
-			payload: []byte{meiReadDeviceIdentification, ReadDeviceIdBasic, 0x00},
+			fc:      FCEncapsulatedInterface,
+			payload: []byte{byte(MEIReadDeviceIdentification), ReadDeviceIdBasic, 0x00},
 			validate: func(req, res *pdu) bool {
 				if isValidModbusException(req, res) {
 					return true
@@ -1277,7 +1239,7 @@ func allDetectionProbes() []detectionProbe {
 		},
 		// FC03 Read Holding Registers (addr 0, qty 1).
 		{
-			fc:      fcReadHoldingRegisters,
+			fc:      FCReadHoldingRegisters,
 			payload: append(uint16ToBytes(BigEndian, 0), uint16ToBytes(BigEndian, 1)...),
 			validate: func(req, res *pdu) bool {
 				if isValidModbusException(req, res) {
@@ -1290,7 +1252,7 @@ func allDetectionProbes() []detectionProbe {
 		},
 		// FC04 Read Input Registers (addr 0, qty 1).
 		{
-			fc:      fcReadInputRegisters,
+			fc:      FCReadInputRegisters,
 			payload: append(uint16ToBytes(BigEndian, 0), uint16ToBytes(BigEndian, 1)...),
 			validate: func(req, res *pdu) bool {
 				if isValidModbusException(req, res) {
@@ -1303,7 +1265,7 @@ func allDetectionProbes() []detectionProbe {
 		},
 		// FC01 Read Coils (addr 0, qty 1).
 		{
-			fc:      fcReadCoils,
+			fc:      FCReadCoils,
 			payload: append(uint16ToBytes(BigEndian, 0), uint16ToBytes(BigEndian, 1)...),
 			validate: func(req, res *pdu) bool {
 				if isValidModbusException(req, res) {
@@ -1316,7 +1278,7 @@ func allDetectionProbes() []detectionProbe {
 		},
 		// FC02 Read Discrete Inputs (addr 0, qty 1).
 		{
-			fc:      fcReadDiscreteInputs,
+			fc:      FCReadDiscreteInputs,
 			payload: append(uint16ToBytes(BigEndian, 0), uint16ToBytes(BigEndian, 1)...),
 			validate: func(req, res *pdu) bool {
 				if isValidModbusException(req, res) {
@@ -1329,7 +1291,7 @@ func allDetectionProbes() []detectionProbe {
 		},
 		// FC11 Report Server ID (no request data).
 		{
-			fc:      fcReportServerId,
+			fc:      FCReportServerID,
 			payload: nil,
 			validate: func(req, res *pdu) bool {
 				if isValidModbusException(req, res) {
@@ -1346,7 +1308,7 @@ func allDetectionProbes() []detectionProbe {
 		},
 		// FC18 Read FIFO Queue (FIFO pointer addr 0).
 		{
-			fc:      fcReadFifoQueue,
+			fc:      FCReadFIFOQueue,
 			payload: uint16ToBytes(BigEndian, 0),
 			validate: func(req, res *pdu) bool {
 				if isValidModbusException(req, res) {
@@ -1358,7 +1320,7 @@ func allDetectionProbes() []detectionProbe {
 		},
 		// FC20 Read File Record (one sub-request: file 1, record 0, length 1).
 		{
-			fc:      fcReadFileRecord,
+			fc:      FCReadFileRecord,
 			payload: []byte{7, 0x06, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01}, // byte count 7; refType 6, file 1, rec 0, len 1
 			validate: func(req, res *pdu) bool {
 				if isValidModbusException(req, res) {
@@ -1376,161 +1338,53 @@ func allDetectionProbes() []detectionProbe {
 	}
 }
 
-// probesForMode returns the probe subset for the given detection mode.
-func probesForMode(mode DetectionMode) []detectionProbe {
-	all := allDetectionProbes()
-	switch mode {
-	case DetectBasic:
-		// FC03 only (index 2 in full table).
-		return []detectionProbe{all[2]}
-	case DetectStrict:
-		// FC08, FC43, FC03 (indices 0–2).
-		return all[:3]
+// getProbeForFC returns the detection probe for the given function code, if defined.
+func getProbeForFC(fc FunctionCode) (detectionProbe, bool) {
+	for _, p := range allDetectionProbes() {
+		if p.fc == fc {
+			return p, true
+		}
+	}
+	return detectionProbe{}, false
+}
+
+// runOneProbe runs a single detection probe. Caller must hold mc.lock.
+// Returns (true, nil) on valid response, (false, nil) on timeout/invalid, (false, err) on context/transport error.
+func (mc *ModbusClient) runOneProbe(ctx context.Context, unitId uint8, p detectionProbe) (bool, error) {
+	select {
+	case <-ctx.Done():
+		return false, ctx.Err()
 	default:
-		return all
 	}
+	req := &pdu{unitId: unitId, functionCode: p.fc, payload: p.payload}
+	res, err := mc.executeRequest(ctx, req)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return false, err
+		}
+		return false, nil
+	}
+	return p.validate(req, res), nil
 }
 
-// IsModbusDevice probes the target with a minimal, read-only request sequence to
-// determine whether the given unit ID responds with Modbus-compliant structure
-// (valid MBAP where applicable, structurally valid normal or exception response).
-// Use after Open(); does not mutate server state.
-//
-// The probe sequence depends on ClientConfiguration.DetectionMode:
-//
-//	DetectAggressive (default) : FC08 → FC43 → FC03 → FC04 → FC01 → FC02
-//	DetectStrict               : FC08 → FC43 → FC03
-//	DetectBasic                : FC03
-//
-// Returns true on first structurally validated response (normal or exception),
-// false if no probe succeeds. Caller decides which unit IDs to try.
-func (mc *ModbusClient) IsModbusDevice(ctx context.Context, unitId uint8) (bool, error) {
+// HasUnitReadFunction probes the given unit with a single read-style function code and returns whether
+// the unit responded with a structurally valid Modbus response (normal or exception). Use after Open().
+// Only FCs that have a detection probe are supported: FC08, FC43, FC03, FC04, FC01, FC02, FC11, FC18, FC20.
+// For an unsupported fc, returns (false, ErrUnexpectedParameters).
+func (mc *ModbusClient) HasUnitReadFunction(ctx context.Context, unitId uint8, fc FunctionCode) (bool, error) {
 	mc.lock.Lock()
 	defer mc.lock.Unlock()
-	return mc.probe(ctx, unitId)
+	p, ok := getProbeForFC(fc)
+	if !ok {
+		return false, ErrUnexpectedParameters
+	}
+	return mc.runOneProbe(ctx, unitId, p)
 }
 
-// DetectUnitID scans the full unit-ID range (0–255) and returns every unit
-// ID that responds with a valid Modbus frame. The scan order is optimised for
-// speed: common IDs first (1, 255, 0), then ascending 2–254.
-//
-// Returns (ids, nil) on success where ids may be empty,
-// or (nil, err) on context cancellation or transport error.
-func (mc *ModbusClient) DetectUnitID(ctx context.Context) ([]uint8, error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-
-	// Build candidate list: prioritise the most common unit IDs.
-	candidates := make([]uint8, 0, 256)
-	candidates = append(candidates, 1, 255, 0)
-	for id := uint8(2); id <= 254; id++ {
-		candidates = append(candidates, id)
-	}
-
-	var found []uint8
-	for _, id := range candidates {
-		select {
-		case <-ctx.Done():
-			return found, ctx.Err()
-		default:
-		}
-		ok, err := mc.probe(ctx, id)
-		if err != nil {
-			return found, err
-		}
-		if ok {
-			found = append(found, id)
-		}
-	}
-	return found, nil
-}
-
-// FingerprintDevice runs all detection probes against the given unit ID and
-// records which function codes the device actively supports. A function is
-// marked as supported when the device responds with a normal (non-exception)
-// response or an exception other than Illegal Function (0x01). Use after Open().
-func (mc *ModbusClient) FingerprintDevice(ctx context.Context, unitId uint8) (*ModbusFingerprint, error) {
-	mc.lock.Lock()
-	defer mc.lock.Unlock()
-
-	fp := &ModbusFingerprint{UnitId: unitId}
-	probes := allDetectionProbes()
-	for _, p := range probes {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
-		}
-		req := &pdu{unitId: unitId, functionCode: p.fc, payload: p.payload}
-		res, err := mc.executeRequest(ctx, req)
-		if err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return nil, err
-			}
-			continue
-		}
-
-		// Normal response → supported.
-		// Exception with code ≠ 0x01 (Illegal Function) → also supported
-		// (device recognises the FC but rejected the specific operation).
-		supported := false
-		if res.functionCode == req.functionCode {
-			supported = true
-		} else if isValidModbusException(req, res) && res.payload[0] != exIllegalFunction {
-			supported = true
-		}
-
-		switch p.fc {
-		case fcDiagnostics:
-			fp.SupportsFC08 = supported
-		case fcReportServerId:
-			fp.SupportsFC11 = supported
-		case fcReadFifoQueue:
-			fp.SupportsFC18 = supported
-		case fcReadFileRecord:
-			fp.SupportsFC20 = supported
-		case fcEncapsulatedInterface:
-			fp.SupportsFC43 = supported
-		case fcReadHoldingRegisters:
-			fp.SupportsFC03 = supported
-		case fcReadInputRegisters:
-			fp.SupportsFC04 = supported
-		case fcReadCoils:
-			fp.SupportsFC01 = supported
-		case fcReadDiscreteInputs:
-			fp.SupportsFC02 = supported
-		}
-	}
-	return fp, nil
-}
-
-// probe runs the detection probe sequence for one unit ID.
-// Caller must hold mc.lock. Returns (true, nil) on first structurally
-// validated Modbus response (normal or exception), (false, nil) on timeout
-// or invalid response, (false, err) on context or transport error.
-func (mc *ModbusClient) probe(ctx context.Context, unitId uint8) (bool, error) {
-	probes := probesForMode(mc.conf.DetectionMode)
-	for _, p := range probes {
-		select {
-		case <-ctx.Done():
-			return false, ctx.Err()
-		default:
-		}
-		req := &pdu{unitId: unitId, functionCode: p.fc, payload: p.payload}
-		res, err := mc.executeRequest(ctx, req)
-		if err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return false, err
-			}
-			// Timeout, bad unit ID, protocol error, EOF, etc.:
-			// no valid Modbus response for this probe — try next.
-			continue
-		}
-		if p.validate(req, res) {
-			return true, nil
-		}
-	}
-	return false, nil
+// HasUnitIdentifyFunction reports whether the given unit supports Read Device Identification (FC43).
+// It is equivalent to HasUnitReadFunction(ctx, unitId, FCEncapsulatedInterface). Use after Open().
+func (mc *ModbusClient) HasUnitIdentifyFunction(ctx context.Context, unitId uint8) (bool, error) {
+	return mc.HasUnitReadFunction(ctx, unitId, FCEncapsulatedInterface)
 }
 
 // Writes a single coil (function code 05).
@@ -1599,7 +1453,7 @@ func (mc *ModbusClient) WriteCoils(ctx context.Context, unitId uint8, addr uint1
 	// create and fill in the request object
 	req = &pdu{
 		unitId:       unitId,
-		functionCode: fcWriteMultipleCoils,
+		functionCode: FCWriteMultipleCoils,
 	}
 
 	// start address
@@ -1630,13 +1484,13 @@ func (mc *ModbusClient) WriteCoils(ctx context.Context, unitId uint8, addr uint1
 			return
 		}
 
-	case (req.functionCode | 0x80):
+	case FunctionCode(uint8(req.functionCode) | 0x80):
 		if len(res.payload) != 1 {
 			err = ErrProtocolError
 			return
 		}
 
-		err = mapExceptionCodeToError(req.functionCode, res.payload[0])
+		err = mapExceptionCodeToError(req.functionCode, ExceptionCode(res.payload[0]))
 
 	default:
 		err = ErrProtocolError
@@ -1657,7 +1511,7 @@ func (mc *ModbusClient) WriteRegister(ctx context.Context, unitId uint8, addr ui
 	// create and fill in the request object
 	req = &pdu{
 		unitId:       unitId,
-		functionCode: fcWriteSingleRegister,
+		functionCode: FCWriteSingleRegister,
 	}
 
 	// register address
@@ -1684,13 +1538,13 @@ func (mc *ModbusClient) WriteRegister(ctx context.Context, unitId uint8, addr ui
 			return
 		}
 
-	case (req.functionCode | 0x80):
+	case FunctionCode(uint8(req.functionCode) | 0x80):
 		if len(res.payload) != 1 {
 			err = ErrProtocolError
 			return
 		}
 
-		err = mapExceptionCodeToError(req.functionCode, res.payload[0])
+		err = mapExceptionCodeToError(req.functionCode, ExceptionCode(res.payload[0]))
 
 	default:
 		err = ErrProtocolError
@@ -1903,7 +1757,7 @@ func (mc *ModbusClient) ReadWriteMultipleRegisters(ctx context.Context, unitId u
 
 	req = &pdu{
 		unitId:       unitId,
-		functionCode: fcReadWriteMultipleRegisters,
+		functionCode: FCReadWriteMultipleRegs,
 	}
 
 	// read starting address
@@ -1939,12 +1793,12 @@ func (mc *ModbusClient) ReadWriteMultipleRegisters(ctx context.Context, unitId u
 		}
 		values = bytesToUint16s(mc.endianness, res.payload[1:])
 
-	case (req.functionCode | 0x80):
+	case FunctionCode(uint8(req.functionCode) | 0x80):
 		if len(res.payload) != 1 {
 			err = ErrProtocolError
 			return
 		}
-		err = mapExceptionCodeToError(req.functionCode, res.payload[0])
+		err = mapExceptionCodeToError(req.functionCode, ExceptionCode(res.payload[0]))
 
 	default:
 		err = ErrProtocolError
@@ -1970,7 +1824,7 @@ func (mc *ModbusClient) ReadFIFOQueue(ctx context.Context, unitId uint8, addr ui
 
 	req = &pdu{
 		unitId:       unitId,
-		functionCode: fcReadFifoQueue,
+		functionCode: FCReadFIFOQueue,
 		payload:      uint16ToBytes(BigEndian, addr),
 	}
 
@@ -2005,12 +1859,12 @@ func (mc *ModbusClient) ReadFIFOQueue(ctx context.Context, unitId uint8, addr ui
 		}
 		values = bytesToUint16s(BigEndian, res.payload[4:])
 
-	case (req.functionCode | 0x80):
+	case FunctionCode(uint8(req.functionCode) | 0x80):
 		if len(res.payload) != 1 {
 			err = ErrProtocolError
 			return
 		}
-		err = mapExceptionCodeToError(req.functionCode, res.payload[0])
+		err = mapExceptionCodeToError(req.functionCode, ExceptionCode(res.payload[0]))
 
 	default:
 		err = ErrProtocolError
@@ -2033,7 +1887,7 @@ func (mc *ModbusClient) Diagnostics(ctx context.Context, unitId uint8, subFuncti
 
 	req = &pdu{
 		unitId:       unitId,
-		functionCode: fcDiagnostics,
+		functionCode: FCDiagnostics,
 		payload:      uint16ToBytes(BigEndian, uint16(subFunction)),
 	}
 	if len(data) > 0 {
@@ -2055,12 +1909,12 @@ func (mc *ModbusClient) Diagnostics(ctx context.Context, unitId uint8, subFuncti
 			SubFunction: DiagnosticSubFunction(bytesToUint16(BigEndian, res.payload[0:2])),
 			Data:        res.payload[2:],
 		}
-	case (req.functionCode | 0x80):
+	case FunctionCode(uint8(req.functionCode) | 0x80):
 		if len(res.payload) != 1 {
 			err = ErrProtocolError
 			return
 		}
-		err = mapExceptionCodeToError(req.functionCode, res.payload[0])
+		err = mapExceptionCodeToError(req.functionCode, ExceptionCode(res.payload[0]))
 	default:
 		err = ErrProtocolError
 		mc.logger.Warningf("unexpected response code (%v)", res.functionCode)
@@ -2079,7 +1933,7 @@ func (mc *ModbusClient) ReportServerId(ctx context.Context, unitId uint8) (rs *R
 
 	req = &pdu{
 		unitId:       unitId,
-		functionCode: fcReportServerId,
+		functionCode: FCReportServerID,
 	}
 
 	res, err = mc.executeRequest(ctx, req)
@@ -2102,12 +1956,12 @@ func (mc *ModbusClient) ReportServerId(ctx context.Context, unitId uint8) (rs *R
 			ByteCount: byteCount,
 			Data:      append([]byte(nil), res.payload[1:1+byteCount]...),
 		}
-	case (req.functionCode | 0x80):
+	case FunctionCode(uint8(req.functionCode) | 0x80):
 		if len(res.payload) != 1 {
 			err = ErrProtocolError
 			return
 		}
-		err = mapExceptionCodeToError(req.functionCode, res.payload[0])
+		err = mapExceptionCodeToError(req.functionCode, ExceptionCode(res.payload[0]))
 	default:
 		err = ErrProtocolError
 		mc.logger.Warningf("unexpected response code (%v)", res.functionCode)
@@ -2168,7 +2022,7 @@ func (mc *ModbusClient) ReadFileRecords(ctx context.Context, unitId uint8, reque
 	// build the request PDU
 	req = &pdu{
 		unitId:       unitId,
-		functionCode: fcReadFileRecord,
+		functionCode: FCReadFileRecord,
 		payload:      []byte{byte(byteCount)},
 	}
 	for _, r := range requests {
@@ -2237,12 +2091,12 @@ func (mc *ModbusClient) ReadFileRecords(ctx context.Context, unitId uint8, reque
 			return
 		}
 
-	case (req.functionCode | 0x80):
+	case FunctionCode(uint8(req.functionCode) | 0x80):
 		if len(res.payload) != 1 {
 			err = ErrProtocolError
 			return
 		}
-		err = mapExceptionCodeToError(req.functionCode, res.payload[0])
+		err = mapExceptionCodeToError(req.functionCode, ExceptionCode(res.payload[0]))
 
 	default:
 		err = ErrProtocolError
@@ -2308,7 +2162,7 @@ func (mc *ModbusClient) WriteFileRecords(ctx context.Context, unitId uint8, reco
 	// build the request PDU
 	req = &pdu{
 		unitId:       unitId,
-		functionCode: fcWriteFileRecord,
+		functionCode: FCWriteFileRecord,
 		payload:      []byte{byte(reqDataLen)},
 	}
 	for _, r := range records {
@@ -2350,12 +2204,12 @@ func (mc *ModbusClient) WriteFileRecords(ctx context.Context, unitId uint8, reco
 			}
 		}
 
-	case (req.functionCode | 0x80):
+	case FunctionCode(uint8(req.functionCode) | 0x80):
 		if len(res.payload) != 1 {
 			err = ErrProtocolError
 			return
 		}
-		err = mapExceptionCodeToError(req.functionCode, res.payload[0])
+		err = mapExceptionCodeToError(req.functionCode, ExceptionCode(res.payload[0]))
 
 	default:
 		err = ErrProtocolError
@@ -2445,9 +2299,9 @@ func (mc *ModbusClient) readBools(ctx context.Context, unitId uint8, addr uint16
 	}
 
 	if di {
-		req.functionCode = fcReadDiscreteInputs
+		req.functionCode = FCReadDiscreteInputs
 	} else {
-		req.functionCode = fcReadCoils
+		req.functionCode = FCReadCoils
 	}
 
 	// start address
@@ -2485,13 +2339,13 @@ func (mc *ModbusClient) readBools(ctx context.Context, unitId uint8, addr uint16
 		// turn bits into a bool slice
 		values = decodeBools(quantity, res.payload[1:])
 
-	case (req.functionCode | 0x80):
+	case FunctionCode(uint8(req.functionCode) | 0x80):
 		if len(res.payload) != 1 {
 			err = ErrProtocolError
 			return
 		}
 
-		err = mapExceptionCodeToError(req.functionCode, res.payload[0])
+		err = mapExceptionCodeToError(req.functionCode, ExceptionCode(res.payload[0]))
 
 	default:
 		err = ErrProtocolError
@@ -2514,9 +2368,9 @@ func (mc *ModbusClient) readRegisters(ctx context.Context, unitId uint8, addr ui
 
 	switch regType {
 	case HoldingRegister:
-		req.functionCode = fcReadHoldingRegisters
+		req.functionCode = FCReadHoldingRegisters
 	case InputRegister:
-		req.functionCode = fcReadInputRegisters
+		req.functionCode = FCReadInputRegisters
 	default:
 		err = ErrUnexpectedParameters
 		mc.logger.Errorf("unexpected register type (%v)", regType)
@@ -2572,13 +2426,13 @@ func (mc *ModbusClient) readRegisters(ctx context.Context, unitId uint8, addr ui
 		// remove the byte count field from the returned slice
 		bytes = res.payload[1:]
 
-	case (req.functionCode | 0x80):
+	case FunctionCode(uint8(req.functionCode) | 0x80):
 		if len(res.payload) != 1 {
 			err = ErrProtocolError
 			return
 		}
 
-		err = mapExceptionCodeToError(req.functionCode, res.payload[0])
+		err = mapExceptionCodeToError(req.functionCode, ExceptionCode(res.payload[0]))
 
 	default:
 		err = ErrProtocolError
@@ -2596,7 +2450,7 @@ func (mc *ModbusClient) writeCoil(ctx context.Context, unitId uint8, addr uint16
 	// create and fill in the request object
 	req = &pdu{
 		unitId:       unitId,
-		functionCode: fcWriteSingleCoil,
+		functionCode: FCWriteSingleCoil,
 	}
 
 	// coil address
@@ -2623,13 +2477,13 @@ func (mc *ModbusClient) writeCoil(ctx context.Context, unitId uint8, addr uint16
 			return
 		}
 
-	case (req.functionCode | 0x80):
+	case FunctionCode(uint8(req.functionCode) | 0x80):
 		if len(res.payload) != 1 {
 			err = ErrProtocolError
 			return
 		}
 
-		err = mapExceptionCodeToError(req.functionCode, res.payload[0])
+		err = mapExceptionCodeToError(req.functionCode, ExceptionCode(res.payload[0]))
 
 	default:
 		err = ErrProtocolError
@@ -2672,7 +2526,7 @@ func (mc *ModbusClient) writeRegisters(ctx context.Context, unitId uint8, addr u
 	// create and fill in the request object
 	req = &pdu{
 		unitId:       unitId,
-		functionCode: fcWriteMultipleRegisters,
+		functionCode: FCWriteMultipleRegisters,
 	}
 
 	// base address
@@ -2703,13 +2557,13 @@ func (mc *ModbusClient) writeRegisters(ctx context.Context, unitId uint8, addr u
 			return
 		}
 
-	case (req.functionCode | 0x80):
+	case FunctionCode(uint8(req.functionCode) | 0x80):
 		if len(res.payload) != 1 {
 			err = ErrProtocolError
 			return
 		}
 
-		err = mapExceptionCodeToError(req.functionCode, res.payload[0])
+		err = mapExceptionCodeToError(req.functionCode, ExceptionCode(res.payload[0]))
 
 	default:
 		err = ErrProtocolError

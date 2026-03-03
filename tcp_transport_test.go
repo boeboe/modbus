@@ -15,7 +15,7 @@ func TestAssembleMBAPFrame(t *testing.T) {
 
 	frame = tt.assembleMBAPFrame(0x9219, &pdu{
 		unitId:       0x33,
-		functionCode: 0x11,
+		functionCode: FCReportServerID,
 		payload:      []byte{0x22, 0x33, 0x44, 0x55},
 	})
 	// expect 7 bytes of MBAP header + 1 bytes of function code + 4 bytes of payload
@@ -37,7 +37,7 @@ func TestAssembleMBAPFrame(t *testing.T) {
 
 	frame = tt.assembleMBAPFrame(0x921a, &pdu{
 		unitId:       0x31,
-		functionCode: 0x06,
+		functionCode: FCWriteSingleRegister,
 		payload:      []byte{0x12, 0x34},
 	})
 	// expect 7 bytes of MBAP header + 1 bytes of function code + 2 bytes of payload
@@ -86,8 +86,8 @@ func TestTCPTransportReadResponse(t *testing.T) {
 	if res.unitId != 0x31 {
 		t.Errorf("expected 0x31 as unit id, got 0x%02x", res.unitId)
 	}
-	if res.functionCode != 0x06 {
-		t.Errorf("expected 0x06 as function code, got 0x%02x", res.functionCode)
+	if res.functionCode != FCWriteSingleRegister {
+		t.Errorf("expected FCWriteSingleRegister (0x06), got 0x%02x", res.functionCode)
 	}
 	if len(res.payload) != 2 {
 		t.Errorf("expected a length of 2, got %v", len(res.payload))
@@ -120,8 +120,8 @@ func TestTCPTransportReadResponse(t *testing.T) {
 	if res.unitId != 0x39 {
 		t.Errorf("expected 0x39 as unit id, got 0x%02x", res.unitId)
 	}
-	if res.functionCode != 0x02 {
-		t.Errorf("expected 0x02 as function code, got 0x%02x", res.functionCode)
+	if res.functionCode != FCReadDiscreteInputs {
+		t.Errorf("expected FCReadDiscreteInputs (0x02), got 0x%02x", res.functionCode)
 	}
 	if len(res.payload) != 2 {
 		t.Errorf("expected a length of 2, got %v", len(res.payload))
@@ -170,7 +170,7 @@ func TestTCPTransportReadResponse(t *testing.T) {
 	if res.unitId != 0x31 {
 		t.Errorf("expected 0x31 as unit id, got 0x%02x", res.unitId)
 	}
-	if res.functionCode != 0x32 {
+	if res.functionCode != FunctionCode(0x32) {
 		t.Errorf("expected 0x32 as response code, got 0x%02x", res.functionCode)
 	}
 	if len(res.payload) != 8 {
@@ -275,8 +275,8 @@ func TestTCPTransportReadRequest(t *testing.T) {
 	if req.unitId != 0xfa {
 		t.Errorf("expected 0xfa as unit id, got 0x%02x", req.unitId)
 	}
-	if req.functionCode != 0x04 {
-		t.Errorf("expected 0x04 as response code, got 0x%02x", req.functionCode)
+	if req.functionCode != FCReadInputRegisters {
+		t.Errorf("expected FCReadInputRegisters (0x04), got 0x%02x", req.functionCode)
 	}
 	if len(req.payload) != 8 {
 		t.Errorf("expected a length of 8, got %v", len(req.payload))
@@ -342,7 +342,7 @@ func TestTCPTransportWriteResponse(t *testing.T) {
 
 	err = tt.WriteResponse(&pdu{
 		unitId:       0x17,
-		functionCode: 0x06,
+		functionCode: FCWriteSingleRegister,
 		payload: []byte{
 			0x44, 0x55, // payload
 			0x66, 0x77, // payload

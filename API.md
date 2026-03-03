@@ -17,9 +17,6 @@ All examples assume `import "github.com/boeboe/modbus"`.
    - [Advanced register operations (FC20/21/23/24)](#26-advanced-register-operations-fc20212324)
    - [Device identification (FC43)](#27-device-identification-fc43)
    - [Modbus device detection](#28-modbus-device-detection)
-     - [Detection modes](#detection-modes)
-     - [Unit-ID auto-detection](#unit-id-auto-detection)
-     - [Device fingerprinting](#device-fingerprinting)
    - [Diagnostics and Report Server ID (FC08/0x11)](#29-diagnostics-and-report-server-id-fc080x11)
 3. [Server](#3-server)
    - [Configuration](#31-serverconfiguration)
@@ -107,11 +104,6 @@ type ClientConfiguration struct {
     // Values > 1 enable the connection pool for concurrent goroutines.
     // Applies to TCP-based transports only.
     MaxConns int
-
-    // DetectionMode controls which probes IsModbusDevice and DetectUnitID execute.
-    // DetectAggressive (default): FC08, FC43, FC03, FC04, FC01, FC02.
-    // DetectStrict: FC08, FC43, FC03. DetectBasic: FC03 only.
-    DetectionMode DetectionMode
 }
 ```
 
@@ -645,139 +637,16 @@ if err != nil {
 
 ### 2.8 Modbus device detection
 
-**IsModbusDevice** probes the target with a minimal, read-only request sequence to determine whether the given unit ID responds with Modbus-compliant structure (valid MBAP where applicable, structurally validated normal or exception response). Use after **Open()**; it does not mutate server state.
-
-Each probe carries a per-function structural validator that rejects non-Modbus traffic such as TCP echo services, HTTP on port 502, or random binary protocols. Exception responses with valid codes (0x01–0x0B) are treated as strong positive detection — even "Illegal Function" proves the remote end speaks Modbus.
+**HasUnitReadFunction** probes the given unit with a single read-style function code and returns whether the unit responded with a structurally valid Modbus response (normal or exception). Supported FCs: FC08, FC43, FC03, FC04, FC01, FC02, FC11, FC18, FC20. For any other FC returns `(false, ErrUnexpectedParameters)`. Use after **Open()**.
 
 ```go
-func (mc *ModbusClient) IsModbusDevice(ctx context.Context, unitId uint8) (bool, error)
+func (mc *ModbusClient) HasUnitReadFunction(ctx context.Context, unitId uint8, fc FunctionCode) (bool, error)
 ```
 
-**Return values:**
-
-| Result | Meaning |
-|--------|--------|
-| `(true, nil)` | Confirmed Modbus (structurally valid normal or exception response) |
-| `(false, nil)` | No valid Modbus response for this unit ID |
-| `(false, err)` | Context cancelled or transport/internal error |
-
-**Example:**
+**HasUnitIdentifyFunction** reports whether the unit supports Read Device Identification (FC43). Equivalent to `HasUnitReadFunction(ctx, unitId, FCEncapsulatedInterface)`. Use after **Open()**.
 
 ```go
-ok, err := client.IsModbusDevice(ctx, 1)
-if err != nil {
-    log.Fatal(err)
-}
-if ok {
-    fmt.Println("Modbus device detected on unit 1")
-}
-```
-
-**Example — unit ID sweep (caller-driven):**
-
-```go
-for id := byte(1); id <= 247; id++ {
-    ok, err := client.IsModbusDevice(ctx, id)
-    if err != nil {
-        log.Fatal(err)
-    }
-    if ok {
-        fmt.Printf("Modbus device on unit %d\n", id)
-        break
-    }
-}
-```
-
-#### Detection modes
-
-`ClientConfiguration.DetectionMode` controls which probes are executed:
-
-```go
-type DetectionMode int
-
-const (
-    DetectAggressive DetectionMode = iota // default: FC08, FC43, FC03, FC04, FC01, FC02
-    DetectStrict                          // FC08, FC43, FC03
-    DetectBasic                           // FC03 only
-)
-```
-
-| Mode | Probe sequence | Use case |
-|------|---------------|----------|
-| `DetectAggressive` (default) | FC08 → FC43 → FC03 → FC04 → FC01 → FC02 | Maximum coverage; scanner sweeps |
-| `DetectStrict` | FC08 → FC43 → FC03 | Good speed/coverage balance |
-| `DetectBasic` | FC03 | Fastest; assumes holding registers at addr 0 |
-
-**Probe details:**
-
-| Probe | FC | Request | Positive signal |
-|-------|-----|---------|----------------|
-| Diagnostics loopback | FC08 | Sub-function 0x0000, data 0x1234 | Exception only (normal echo is ambiguous with TCP echo) |
-| Device Identification | FC43 | Basic category, object 0 | Normal response ≥ 6 bytes, or any valid exception |
-| Read Holding Registers | FC03 | Address 0, quantity 1 | Normal: 3-byte payload (byte-count 2 + 2 data bytes), or any valid exception |
-| Read Input Registers | FC04 | Address 0, quantity 1 | Same as FC03 |
-| Read Coils | FC01 | Address 0, quantity 1 | Normal: 2-byte payload (byte-count 1 + 1 data byte), or any valid exception |
-| Read Discrete Inputs | FC02 | Address 0, quantity 1 | Same as FC01 |
-
-```go
-client, _ := modbus.NewClient(&modbus.ClientConfiguration{
-    URL:           "tcp://192.168.1.10:502",
-    DetectionMode: modbus.DetectStrict,
-})
-client.Open()
-ok, _ := client.IsModbusDevice(ctx, 1)
-```
-
-#### Unit-ID auto-detection
-
-**DetectUnitID** scans the full unit-ID range (0–255) and returns **every** unit ID that responds with a valid Modbus frame. The scan order is optimised for speed: common IDs first (1, 255, 0), then ascending 2–254.
-
-```go
-func (mc *ModbusClient) DetectUnitID(ctx context.Context) ([]uint8, error)
-```
-
-| Result | Meaning |
-|--------|--------|
-| `(ids, nil)` | `ids` contains all responding unit IDs (may be empty) |
-| `(partial, err)` | Context cancelled or transport error; `partial` contains IDs found so far |
-
-```go
-ids, err := client.DetectUnitID(ctx)
-if err != nil {
-    log.Fatal(err)
-}
-for _, id := range ids {
-    fmt.Printf("responding unit: %d\n", id)
-}
-```
-
-#### Device fingerprinting
-
-**FingerprintDevice** runs all detection probes against a unit and records which function codes the device supports. A function is marked as supported when the device returns a normal response or a non-Illegal-Function exception (meaning it recognises the FC but rejected the specific operation).
-
-```go
-func (mc *ModbusClient) FingerprintDevice(ctx context.Context, unitId uint8) (*ModbusFingerprint, error)
-
-type ModbusFingerprint struct {
-    UnitId        uint8
-    SupportsFC01  bool // Read Coils
-    SupportsFC02  bool // Read Discrete Inputs
-    SupportsFC03  bool // Read Holding Registers
-    SupportsFC04  bool // Read Input Registers
-    SupportsFC08  bool // Diagnostics
-    SupportsFC11  bool // Report Server ID
-    SupportsFC18  bool // Read FIFO Queue
-    SupportsFC20  bool // Read File Record
-    SupportsFC43  bool // Read Device Identification
-}
-```
-
-```go
-fp, err := client.FingerprintDevice(ctx, 1)
-if err != nil {
-    log.Fatal(err)
-}
-fmt.Printf("FC03=%v FC43=%v FC08=%v FC11=%v\n", fp.SupportsFC03, fp.SupportsFC43, fp.SupportsFC08, fp.SupportsFC11)
+func (mc *ModbusClient) HasUnitIdentifyFunction(ctx context.Context, unitId uint8) (bool, error)
 ```
 
 ---
@@ -1098,9 +967,9 @@ usual `errors.Is(err, modbus.ErrIllegalDataAddress)` pattern works even through
 
 ```go
 type ExceptionError struct {
-    FunctionCode  byte  // originating FC (high bit cleared)
-    ExceptionCode byte  // raw exception byte (0x01–0x0B)
-    Sentinel      error // one of the Err* sentinels above
+    FunctionCode  FunctionCode  // originating FC (high bit cleared)
+    ExceptionCode ExceptionCode // Modbus exception code (0x01–0x0B)
+    Sentinel      error         // one of the Err* sentinels above
 }
 ```
 
@@ -1376,3 +1245,24 @@ Distinguishes holding from input registers on read calls.
 |---|---|
 | `HoldingRegister` | FC03 (read) / FC06, FC16 (write) |
 | `InputRegister` | FC04 (read only) |
+
+### `FunctionCode` and `ExceptionCode`
+
+Protocol function and exception codes are strongly typed. Use `FunctionCode` and
+`ExceptionCode` (and the exported constants below) instead of raw bytes when
+inspecting `ExceptionError` or implementing metrics.
+
+**Exported function code constants:** `FCReadCoils`, `FCReadDiscreteInputs`,
+`FCReadHoldingRegisters`, `FCReadInputRegisters`, `FCWriteSingleCoil`,
+`FCWriteSingleRegister`, `FCWriteMultipleCoils`, `FCWriteMultipleRegisters`,
+`FCDiagnostics`, `FCReportServerID`, `FCReadFileRecord`, `FCWriteFileRecord`,
+`FCMaskWriteRegister`, `FCReadWriteMultipleRegs`, `FCReadFIFOQueue`,
+`FCEncapsulatedInterface`.
+
+**MEI type (FC43):** `MEIReadDeviceIdentification`.
+
+**FunctionCode helpers:** `IsException()` (MSB set), `Base()` (strip exception bit), `String()` (e.g. `"Read Holding Registers (0x03)"` or `"Read Holding Registers Exception (0x83)"`), `Valid()` (known FC after stripping exception bit), `KnownFunctionCodes()` (slice of base FCs), `ParseFunctionCode(byte)` (validate raw byte, return `FunctionCode` or error).
+
+**ExceptionCode helpers:** `String()` (e.g. `"Illegal Data Address (0x02)"`), `ToError()` (sentinel or `fmt.Errorf` for unknown).
+
+**ExceptionError:** `Error()` returns a readable message like `"Read Holding Registers (0x03): Illegal Data Address (0x02)"` using the above `String()` methods.

@@ -3,9 +3,9 @@
 [![Go](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.txt)
 [![Go Report Card](https://goreportcard.com/badge/github.com/boeboe/modbus)](https://goreportcard.com/report/github.com/boeboe/modbus)
-[![Release](https://img.shields.io/badge/release-v1.0.4-blue.svg)](https://github.com/boeboe/modbus/releases)
+[![Release](https://img.shields.io/badge/release-v1.0.5-blue.svg)](https://github.com/boeboe/modbus/releases)
 
-A production-ready Go implementation of the Modbus application protocol — **v1.0.4**.
+A production-ready Go implementation of the Modbus application protocol — **v1.0.5**.
 
 The library exposes a high-level, idiomatic Go API for both client and server roles,
 working with native Go types across all supported transports. Every request carries a
@@ -99,7 +99,7 @@ cancellation control independent of the connection lifecycle.
 | 24 | 0x18 | Read FIFO Queue | `ReadFIFOQueue` |
 | 43/14 | 0x2B/0x0E | Read Device Identification | `ReadDeviceIdentification`, `ReadAllDeviceIdentification` |
 
-**Device detection:** `IsModbusDevice(ctx, unitId)` probes the target with read-only, structurally validated requests (FC08, FC43, FC03, FC04, FC01, FC02) and returns whether the given unit ID responds with Modbus-compliant structure. Configurable via `DetectionMode`: `DetectAggressive` (default, full sequence), `DetectStrict` (FC08/FC43/FC03), `DetectBasic` (FC03 only). `DetectUnitID(ctx)` scans all 256 unit IDs (0–255) and returns every responding one. `FingerprintDevice(ctx, unitId)` records which FCs the device supports. See [API.md](API.md#28-modbus-device-detection).
+**Device detection:** `HasUnitReadFunction(ctx, unitId, fc)` checks a single read-style FC (FC08, FC43, FC03, FC04, FC01, FC02, FC11, FC18, FC20). `HasUnitIdentifyFunction(ctx, unitId)` checks FC43 (Read Device Identification). Callers decide which unit IDs and function codes to probe to avoid device timeouts from batch probing. See [API.md](API.md#28-modbus-device-detection).
 
 ### Supported Go types
 

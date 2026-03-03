@@ -438,7 +438,7 @@ func (ms *ModbusServer) handleTransport(t transport, clientAddr string, clientRo
 		}
 
 		switch req.functionCode {
-		case fcReadCoils, fcReadDiscreteInputs:
+		case FCReadCoils, FCReadDiscreteInputs:
 			var coils []bool
 			var resCount int
 
@@ -464,7 +464,7 @@ func (ms *ModbusServer) handleTransport(t transport, clientAddr string, clientRo
 			}
 
 			// invoke the appropriate handler
-			if req.functionCode == fcReadCoils {
+			if req.functionCode == FCReadCoils {
 				coils, err = ms.handler.HandleCoils(ctx, &CoilsRequest{
 					ClientAddr: clientAddr,
 					ClientRole: clientRole,
@@ -514,7 +514,7 @@ func (ms *ModbusServer) handleTransport(t transport, clientAddr string, clientRo
 			// coil values
 			res.payload = append(res.payload, encodeBools(coils)...)
 
-		case fcWriteSingleCoil:
+		case FCWriteSingleCoil:
 			if len(req.payload) != 4 {
 				err = ErrProtocolError
 				break
@@ -558,7 +558,7 @@ func (ms *ModbusServer) handleTransport(t transport, clientAddr string, clientRo
 			res.payload = append(res.payload,
 				req.payload[2], req.payload[3])
 
-		case fcWriteMultipleCoils:
+		case FCWriteMultipleCoils:
 			var expectedLen int
 
 			if len(req.payload) < 6 {
@@ -626,7 +626,7 @@ func (ms *ModbusServer) handleTransport(t transport, clientAddr string, clientRo
 			res.payload = append(res.payload,
 				uint16ToBytes(BigEndian, quantity)...)
 
-		case fcReadHoldingRegisters, fcReadInputRegisters:
+		case FCReadHoldingRegisters, FCReadInputRegisters:
 			var regs []uint16
 			var resCount int
 
@@ -652,7 +652,7 @@ func (ms *ModbusServer) handleTransport(t transport, clientAddr string, clientRo
 			}
 
 			// invoke the appropriate handler
-			if req.functionCode == fcReadHoldingRegisters {
+			if req.functionCode == FCReadHoldingRegisters {
 				regs, err = ms.handler.HandleHoldingRegisters(
 					ctx, &HoldingRegistersRequest{
 						ClientAddr: clientAddr,
@@ -701,7 +701,7 @@ func (ms *ModbusServer) handleTransport(t transport, clientAddr string, clientRo
 			res.payload = append(res.payload,
 				uint16sToBytes(BigEndian, regs)...)
 
-		case fcWriteSingleRegister:
+		case FCWriteSingleRegister:
 			var value uint16
 
 			if len(req.payload) != 4 {
@@ -741,7 +741,7 @@ func (ms *ModbusServer) handleTransport(t transport, clientAddr string, clientRo
 			res.payload = append(res.payload,
 				uint16ToBytes(BigEndian, value)...)
 
-		case fcWriteMultipleRegisters:
+		case FCWriteMultipleRegisters:
 			var expectedLen int
 
 			if len(req.payload) < 6 {
@@ -811,10 +811,10 @@ func (ms *ModbusServer) handleTransport(t transport, clientAddr string, clientRo
 				// reply with the request target unit ID
 				unitId: req.unitId,
 				// set the error bit
-				functionCode: (0x80 | req.functionCode),
+				functionCode: FunctionCode(uint8(req.functionCode) | 0x80),
 				// set the exception code to illegal function to indicate that
 				// the server does not know how to handle this function code.
-				payload: []byte{exIllegalFunction},
+				payload: []byte{byte(exIllegalFunction)},
 			}
 		}
 
@@ -845,8 +845,8 @@ func (ms *ModbusServer) handleTransport(t transport, clientAddr string, clientRo
 				}
 				res = &pdu{
 					unitId:       req.unitId,
-					functionCode: (0x80 | req.functionCode),
-					payload:      []byte{mapErrorToExceptionCode(err)},
+					functionCode: FunctionCode(uint8(req.functionCode) | 0x80),
+					payload:      []byte{byte(mapErrorToExceptionCode(err))},
 				}
 			}
 		} else if ms.metrics != nil {

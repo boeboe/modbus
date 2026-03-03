@@ -15,7 +15,7 @@ func TestAssembleRTUFrame(t *testing.T) {
 
 	frame = rt.assembleRTUFrame(&pdu{
 		unitId:       0x33,
-		functionCode: 0x11,
+		functionCode: FCReportServerID,
 		payload:      []byte{0x22, 0x33, 0x44, 0x55},
 	})
 	// expect 1 byte of unit id, 1 byte of function code, 4 bytes of payload and
@@ -36,7 +36,7 @@ func TestAssembleRTUFrame(t *testing.T) {
 
 	frame = rt.assembleRTUFrame(&pdu{
 		unitId:       0x31,
-		functionCode: 0x06,
+		functionCode: FCWriteSingleRegister,
 		payload:      []byte{0x12, 0x34},
 	})
 	// expect 1 byte of unit if, 1 byte of function code, 2 bytes of payload and
@@ -91,7 +91,7 @@ func TestRTUTransportReadRTUFrame(t *testing.T) {
 	if res.unitId != 0x31 {
 		t.Errorf("expected 0x31 as unit id, got 0x%02x", res.unitId)
 	}
-	if res.functionCode != 0x82 {
+	if res.functionCode != FunctionCode(0x82) {
 		t.Errorf("expected 0x82 as function code, got 0x%02x", res.functionCode)
 	}
 	if len(res.payload) != 1 {
@@ -128,8 +128,8 @@ func TestRTUTransportReadRTUFrame(t *testing.T) {
 	if res.unitId != 0x31 {
 		t.Errorf("expected 0x31 as unit id, got 0x%02x", res.unitId)
 	}
-	if res.functionCode != 0x03 {
-		t.Errorf("expected 0x03 as function code, got 0x%02x", res.functionCode)
+	if res.functionCode != FCReadHoldingRegisters {
+		t.Errorf("expected FCReadHoldingRegisters (0x03), got 0x%02x", res.functionCode)
 	}
 	if len(res.payload) != 5 {
 		t.Errorf("expected a length of 5, got %v", len(res.payload))

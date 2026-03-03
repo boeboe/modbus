@@ -173,7 +173,7 @@ func (rt *rtuTransport) readRTUFrame() (res *pdu, err error) {
 	}
 
 	// figure out how many further bytes to read
-	bytesNeeded, err = expectedResponseLenth(uint8(rxbuf[1]), uint8(rxbuf[2]))
+	bytesNeeded, err = expectedResponseLenth(FunctionCode(rxbuf[1]), uint8(rxbuf[2]))
 	if err != nil {
 		return
 	}
@@ -214,7 +214,7 @@ func (rt *rtuTransport) readRTUFrame() (res *pdu, err error) {
 
 	res = &pdu{
 		unitId:       rxbuf[0],
-		functionCode: rxbuf[1],
+		functionCode: FunctionCode(rxbuf[1]),
 		// pass the byte count + trailing data as payload, withtout the CRC
 		payload: rxbuf[2 : 3+bytesNeeded-2],
 	}
@@ -267,7 +267,7 @@ func (rt *rtuTransport) readVariableLengthDiagnostics(header []byte) (res *pdu, 
 
 	res = &pdu{
 		unitId:       buf[0],
-		functionCode: buf[1],
+		functionCode: FunctionCode(buf[1]),
 		payload:      append([]byte(nil), buf[2:offset-2]...),
 	}
 	return
@@ -278,7 +278,7 @@ func (rt *rtuTransport) assembleRTUFrame(p *pdu) (adu []byte) {
 	var crc crc
 
 	adu = append(adu, p.unitId)
-	adu = append(adu, p.functionCode)
+	adu = append(adu, byte(p.functionCode))
 	adu = append(adu, p.payload...)
 
 	// run the ADU through the CRC generator
@@ -296,36 +296,36 @@ func (rt *rtuTransport) assembleRTUFrame(p *pdu) (adu []byte) {
 // after the first 3 bytes (unitId, functionCode, first payload byte).
 // Return -1 for variable-length responses (FC08 Diagnostics); the caller must use
 // readVariableLengthDiagnostics.
-func expectedResponseLenth(responseCode uint8, responseLength uint8) (int, error) {
+func expectedResponseLenth(responseCode FunctionCode, responseLength uint8) (int, error) {
 	switch responseCode {
-	case fcReadHoldingRegisters,
-		fcReadInputRegisters,
-		fcReadCoils,
-		fcReadDiscreteInputs:
+	case FCReadHoldingRegisters,
+		FCReadInputRegisters,
+		FCReadCoils,
+		FCReadDiscreteInputs:
 		return int(responseLength), nil
-	case fcWriteSingleRegister,
-		fcWriteMultipleRegisters,
-		fcWriteSingleCoil,
-		fcWriteMultipleCoils:
+	case FCWriteSingleRegister,
+		FCWriteMultipleRegisters,
+		FCWriteSingleCoil,
+		FCWriteMultipleCoils:
 		return 3, nil
-	case fcMaskWriteRegister:
+	case FCMaskWriteRegister:
 		return 5, nil
-	case fcDiagnostics:
+	case FCDiagnostics:
 		// Variable-length PDU — no byte-count field.
 		return -1, nil
-	case fcReportServerId:
+	case FCReportServerID:
 		return int(responseLength), nil
-	case fcReadHoldingRegisters | 0x80,
-		fcReadInputRegisters | 0x80,
-		fcReadCoils | 0x80,
-		fcReadDiscreteInputs | 0x80,
-		fcWriteSingleRegister | 0x80,
-		fcWriteMultipleRegisters | 0x80,
-		fcWriteSingleCoil | 0x80,
-		fcWriteMultipleCoils | 0x80,
-		fcMaskWriteRegister | 0x80,
-		fcDiagnostics | 0x80,
-		fcReportServerId | 0x80:
+	case FunctionCode(0x80 | uint8(FCReadHoldingRegisters)),
+		FunctionCode(0x80 | uint8(FCReadInputRegisters)),
+		FunctionCode(0x80 | uint8(FCReadCoils)),
+		FunctionCode(0x80 | uint8(FCReadDiscreteInputs)),
+		FunctionCode(0x80 | uint8(FCWriteSingleRegister)),
+		FunctionCode(0x80 | uint8(FCWriteMultipleRegisters)),
+		FunctionCode(0x80 | uint8(FCWriteSingleCoil)),
+		FunctionCode(0x80 | uint8(FCWriteMultipleCoils)),
+		FunctionCode(0x80 | uint8(FCMaskWriteRegister)),
+		FunctionCode(0x80 | uint8(FCDiagnostics)),
+		FunctionCode(0x80 | uint8(FCReportServerID)):
 		return 0, nil
 	default:
 		return 0, ErrProtocolError

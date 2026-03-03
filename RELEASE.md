@@ -1,5 +1,36 @@
 # Release Notes
 
+## v1.0.5 — 2026-03-01
+
+### Strongly typed protocol (FunctionCode, ExceptionCode, MEIType)
+
+- **New types** — `FunctionCode`, `ExceptionCode`, and `MEIType` replace raw `uint8` for function codes, exception codes, and FC43 MEI types. No protocol leakage of magic numbers in public APIs.
+- **`pdu`** — `functionCode` is now `FunctionCode`. **`ExceptionError`** — `FunctionCode` and `ExceptionCode` fields are typed; `Error()`, `Unwrap()`, and `Is()` unchanged so `errors.Is(err, ErrIllegalDataAddress)` remains valid.
+- **Exported constants** — All public function codes use exported `FC*` names: `FCReadCoils`, `FCReadDiscreteInputs`, `FCReadHoldingRegisters`, `FCReadInputRegisters`, `FCWriteSingleCoil`, `FCWriteSingleRegister`, `FCWriteMultipleCoils`, `FCWriteMultipleRegisters`, `FCDiagnostics`, `FCReportServerID`, `FCReadFileRecord`, `FCWriteFileRecord`, `FCMaskWriteRegister`, `FCReadWriteMultipleRegs`, `FCReadFIFOQueue`, `FCEncapsulatedInterface`. MEI: `MEIReadDeviceIdentification`. Exception codes remain unexported `ex*` with type `ExceptionCode`.
+- **Exception mapping** — `mapExceptionCodeToError(fc FunctionCode, ec ExceptionCode) error` and `mapErrorToExceptionCode(err error) ExceptionCode`. Call sites that need a wire byte use `byte(mapErrorToExceptionCode(err))`.
+- **Call sites** — Client, server, metrics, RTU/TCP transports, and all tests updated to use the new types and constant names. RTU `expectedResponseLenth` takes `FunctionCode`; FC08 variable-length handling unchanged.
+
+### FunctionCode and ExceptionCode helpers
+
+- **FunctionCode** — `IsException() bool` (MSB set), `Base() FunctionCode` (strip exception bit), `String() string` (e.g. `"Read Holding Registers (0x03)"` or `"Read Holding Registers Exception (0x83)"`), `Valid() bool` (known FC after stripping exception bit), `KnownFunctionCodes() []FunctionCode` (all 16 base FCs), `ParseFunctionCode(b byte) (FunctionCode, error)` (validate raw byte, accept normal or exception response).
+- **ExceptionCode** — `String() string` (e.g. `"Illegal Data Address (0x02)"`), `ToError() error` (sentinel for known codes, `fmt.Errorf` for unknown). `mapExceptionCodeToError` now uses `ec.ToError()` and the exception name map to decide wrapping.
+- **ExceptionError** — `Error()` now returns a descriptive message like `"Read Holding Registers (0x03): Illegal Data Address (0x02)"` using `FunctionCode.Base()` and `ExceptionCode` `String()` methods. Improves logging, scanning, and CLI tools.
+
+### Device detection: single-probe API only (breaking)
+
+- **Removed** — `IsModbusDevice`, `DetectUnitID`, and `FingerprintDevice` are removed. Batch probing can cause device timeouts; callers should use the single-probe APIs instead.
+- **Removed** — `DetectionMode`, `DetectAggressive`, `DetectStrict`, `DetectBasic`, and `ClientConfiguration.DetectionMode`.
+- **Removed** — `ModbusFingerprint` type (was populated by `FingerprintDevice`).
+- **Kept** — `HasUnitReadFunction(ctx, unitId, fc)` — one probe per call for a specific read-style FC (FC08, FC43, FC03, FC04, FC01, FC02, FC11, FC18, FC20). Returns `(false, ErrUnexpectedParameters)` for unsupported FCs.
+- **Kept** — `HasUnitIdentifyFunction(ctx, unitId)` — equivalent to `HasUnitReadFunction(ctx, unitId, FCEncapsulatedInterface)`.
+- **Docs** — API.md and README.md updated; device detection section documents only the two single-probe methods. Tests in `detect_test.go` now cover `HasUnitReadFunction` and `HasUnitIdentifyFunction` only.
+
+### Documentation
+
+- **[API.md](API.md)** — ExceptionError struct and example updated for typed `FunctionCode`/`ExceptionCode`. Type constants section documents `FunctionCode`/`ExceptionCode` and the new helpers (`String`, `IsException`, `Base`, `Valid`, `KnownFunctionCodes`, `ParseFunctionCode`, `ExceptionCode.String`, `ToError`, and the new `ExceptionError.Error()` behaviour). Device detection section documents only `HasUnitReadFunction` and `HasUnitIdentifyFunction`.
+
+---
+
 ## v1.0.4 — 2026-03-01
 
 ### FingerprintDevice extended with additional function codes
