@@ -1,6 +1,11 @@
-# github.com/boeboe/modbus
+# modbus — Modbus Protocol Library
 
-A production-ready Go implementation of the Modbus application protocol — **v2.0.0**.
+[![Go](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)](https://go.dev/)
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.txt)
+[![Go Report Card](https://goreportcard.com/badge/github.com/boeboe/modbus)](https://goreportcard.com/report/github.com/boeboe/modbus)
+[![Release](https://img.shields.io/badge/release-v1.0.4-blue.svg)](https://github.com/boeboe/modbus/releases)
+
+A production-ready Go implementation of the Modbus application protocol — **v1.0.4**.
 
 The library exposes a high-level, idiomatic Go API for both client and server roles,
 working with native Go types across all supported transports. Every request carries a
