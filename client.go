@@ -781,8 +781,9 @@ func (mc *ModbusClient) ReadFloat64(ctx context.Context, unitId uint8, addr uint
 	return
 }
 
-// Reads one or multiple 16-bit registers (function code 03 or 04) as bytes.
-// A per-register byteswap is performed if endianness is set to LittleEndian.
+// ReadBytes reads one or more 16-bit registers (FC03/FC04) as bytes. quantity is the
+// number of bytes to read (the library reads ceil(quantity/2) registers). A per-register
+// byteswap is applied when endianness is LittleEndian.
 func (mc *ModbusClient) ReadBytes(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) (values []byte, err error) {
 	mc.lock.Lock()
 	defer mc.lock.Unlock()
@@ -792,9 +793,9 @@ func (mc *ModbusClient) ReadBytes(ctx context.Context, unitId uint8, addr uint16
 	return
 }
 
-// Reads one or multiple 16-bit registers (function code 03 or 04) as bytes.
-// No byte or word reordering is performed: bytes are returned exactly as they come
-// off the wire, allowing the caller to handle encoding/endianness/word order manually.
+// ReadRawBytes reads one or more 16-bit registers (FC03/FC04) as raw bytes. quantity is
+// the number of bytes to read (the library reads ceil(quantity/2) registers). No byte or
+// word reordering is performed; bytes are returned exactly as on the wire.
 func (mc *ModbusClient) ReadRawBytes(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) (values []byte, err error) {
 	mc.lock.Lock()
 	defer mc.lock.Unlock()

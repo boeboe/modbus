@@ -340,7 +340,9 @@ func (mc *ModbusClient) ReadBytes(ctx context.Context, unitId uint8, addr uint16
 func (mc *ModbusClient) ReadRawBytes(ctx context.Context, unitId uint8, addr uint16, quantity uint16, regType RegType) ([]byte, error)
 ```
 
-`ReadBytes` performs a per-register byte-swap when endianness is `LittleEndian`.
+For both methods, **quantity is the number of bytes** to read (the library reads
+`ceil(quantity/2)` registers). To read N registers, pass `quantity = N*2`.
+`ReadBytes` applies a per-register byte-swap when endianness is `LittleEndian`.
 `ReadRawBytes` returns bytes exactly as received, deferring all interpretation to
 the caller.
 
